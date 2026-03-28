@@ -1,0 +1,21 @@
+# =============================================================
+# SigLlama — Base configuration
+# =============================================================
+
+seed: 0
+
+# --- Model identifiers ---
+siglip_model: "google/siglip-base-patch16-224"
+llm_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+# --- Dimensions ---
+visual_dim: 768       # SigLIP hidden size
+llm_dim: 2048         # TinyLlama hidden size
+
+# --- Soft tokens ---
+max_detections: 20
+num_landmarks: 468
+
+# --- Paths (override per-stage) ---
+data_root: "/data"
+output_dir: "outputs"

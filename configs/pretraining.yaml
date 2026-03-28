@@ -1,0 +1,28 @@
+# =============================================================
+# Stage 1 — Adapter pre-training on LCS-558K
+# =============================================================
+
+_base_: base.yaml
+
+# --- Data ---
+metadata_path: "/data/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
+image_root: "/data/lcs-558k"
+soft_tokens_path: "/data/lcs-558k/lcs_softtokens.ndjson"
+
+# --- Freezing ---
+freeze_siglip: true
+freeze_llm: true
+
+# --- Training ---
+batch_size: 32
+num_workers: 4
+learning_rate: 1.0e-3
+weight_decay: 0.01
+warmup_steps: 500
+max_epochs: 5
+max_text_length: 256
+
+# --- Logging ---
+log_interval: 100
+save_interval: 1000
+output_dir: "outputs/pretraining"

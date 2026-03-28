@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Model weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Generated outputs
+annotated/
+outputs/
+results/
+logs/
+wandb/
+
+# Data artifacts (regenerable)
+*.ndjson
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/

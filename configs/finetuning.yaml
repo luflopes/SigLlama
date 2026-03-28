@@ -1,0 +1,45 @@
+# =============================================================
+# Stage 2 — Fine-tuning for deepfake detection with MoE
+# =============================================================
+
+_base_: base.yaml
+
+# --- Checkpoint from Stage 1 ---
+adapter_checkpoint: "outputs/pretraining/best_adapter.pt"
+
+# --- Data ---
+metadata_path: "/data/deepfake/metadata.json"
+image_root: "/data/deepfake/images"
+soft_tokens_path: "/data/deepfake/soft_tokens.ndjson"
+
+# --- Freezing ---
+freeze_siglip: true
+freeze_llm: false           # unfreeze or use LoRA
+
+# --- LoRA (applied to TinyLlama) ---
+use_lora: true
+lora_rank: 16
+lora_alpha: 32
+lora_target_modules: ["q_proj", "v_proj"]
+
+# --- MoE ---
+moe:
+  num_experts: 4
+  top_k: 2
+  expert_type: "lora"        # "mlp" or "lora"
+  lora_rank: 16
+  aux_loss_weight: 0.01
+
+# --- Training ---
+batch_size: 16
+num_workers: 4
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_steps: 200
+max_epochs: 10
+max_text_length: 512
+
+# --- Logging ---
+log_interval: 50
+save_interval: 500
+output_dir: "outputs/finetuning"
