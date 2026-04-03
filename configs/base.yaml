@@ -14,7 +14,7 @@ llm_dim: 2048         # TinyLlama hidden size
 
 # --- Soft tokens ---
 max_detections: 20
-num_landmarks: 468
+num_landmarks: 478
 
 # --- Paths (override per-stage) ---
 data_root: "/data"

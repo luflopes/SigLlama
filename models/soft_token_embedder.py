@@ -6,7 +6,7 @@ being fed to TinyLlama.
 
 Soft tokens include:
   - Object detections: [cx, cy, w, h, class_id, confidence] -> embedding
-  - Face landmarks: 468 normalised (x, y) points -> embedding sequence
+  - Face landmarks: 478 normalised (x, y) points -> embedding sequence
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class SoftTokenEmbedder(nn.Module):
     max_detections : int
         Maximum number of detection tokens per image.
     num_landmarks : int
-        Number of face-mesh landmarks (468 for MediaPipe).
+        Number of face-mesh landmarks (478 for MediaPipe Tasks API).
     landmark_dim : int
         Per-landmark input features (default 2: normalised x, y).
     """
@@ -33,7 +33,7 @@ class SoftTokenEmbedder(nn.Module):
         self,
         llm_dim: int = 2048,
         max_detections: int = 20,
-        num_landmarks: int = 468,
+        num_landmarks: int = 478,
         landmark_dim: int = 2,
     ):
         super().__init__()

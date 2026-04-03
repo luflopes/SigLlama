@@ -46,7 +46,7 @@ class SigLlamaConfig:
 
     # Soft tokens
     max_detections: int = 20
-    num_landmarks: int = 468
+    num_landmarks: int = 478
 
     # MoE
     num_experts: int = 4

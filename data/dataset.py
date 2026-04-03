@@ -43,7 +43,7 @@ class SigLlamaDataset(Dataset):
         processor: Any = None,
         tokenizer: Any = None,
         max_detections: int = 20,
-        num_landmarks: int = 468,
+        num_landmarks: int = 478,
         max_text_length: int = 256,
     ):
         self.image_root = Path(image_root)
