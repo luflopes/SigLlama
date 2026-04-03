@@ -33,14 +33,14 @@ class YoloDetector:
             cls_id = int(box.cls.cpu().numpy()[0])
             conf = float(box.conf.cpu().numpy()[0])
 
-            x1, y1, x2, y2 = xyxy
+            x1, y1, x2, y2 = xyxy.tolist()
             cx = (x1 + x2) / 2 / w
             cy = (y1 + y2) / 2 / h
             bw = (x2 - x1) / w
             bh = (y2 - y1) / h
 
             detections.append({
-                "bbox": [cx, cy, bw, bh],
+                "bbox": [float(cx), float(cy), float(bw), float(bh)],
                 "class_id": cls_id,
                 "class_name": self.class_names.get(cls_id, str(cls_id)),
                 "confidence": conf,

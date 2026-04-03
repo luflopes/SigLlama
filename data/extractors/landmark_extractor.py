@@ -84,14 +84,14 @@ class LandmarkExtractor:
         for p in landmarks:
             x, y = float(p.x), float(p.y)
             normalized.append([x, y])
-            absolute.append([x * w, y * h])
+            absolute.append([float(x * w), float(y * h)])
             if 0 <= x <= 1 and 0 <= y <= 1:
                 visible_points += 1
 
         return {
             "normalized": normalized,
             "absolute": absolute,
-            "confidence": visible_points / len(normalized),
+            "confidence": float(visible_points / len(normalized)),
         }
 
     def close(self) -> None:
