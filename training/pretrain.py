@@ -122,10 +122,13 @@ def main() -> None:
         model.llm.gradient_checkpointing_enable()
 
     if args.resume:
-        model.adapter.load_state_dict(
-            torch.load(args.resume, map_location="cpu", weights_only=True)
-        )
-        accelerator.print(f"Resumed adapter from {args.resume}")
+        ckpt = torch.load(args.resume, map_location="cpu", weights_only=True)
+        if isinstance(ckpt, dict) and "adapter" in ckpt:
+            model.adapter.load_state_dict(ckpt["adapter"])
+            accelerator.print(f"Resumed adapter from {args.resume} (step {ckpt.get('step', '?')})")
+        else:
+            model.adapter.load_state_dict(ckpt)
+            accelerator.print(f"Resumed adapter from {args.resume}")
 
     trainable = sum(p.numel() for p in model.adapter.parameters())
     total = sum(p.numel() for p in model.parameters())
@@ -228,10 +231,10 @@ def main() -> None:
                         "elapsed_min": (time.time() - t0) / 60,
                     })
 
-            # -- save --
+            # -- save (overwrites previous → only 2 files on disk: latest + best) --
             if global_step % save_interval == 0:
                 _save_adapter(accelerator, model, output_dir,
-                              f"adapter_step_{global_step}.pt")
+                              "latest_adapter.pt", step=global_step)
 
             # -- validate --
             if global_step % val_interval == 0:
@@ -242,8 +245,8 @@ def main() -> None:
                 if accelerator.is_main_process and vl < best_val_loss:
                     best_val_loss = vl
                     _save_adapter(accelerator, model, output_dir,
-                                  "best_adapter.pt")
-                    accelerator.print("  -> new best saved")
+                                  "best_adapter.pt", step=global_step)
+                    accelerator.print(f"  -> new best saved (val_loss={vl:.4f})")
                 model.train()
 
             # -- sample generation --
@@ -256,7 +259,7 @@ def main() -> None:
 
         # end of epoch
         _save_adapter(accelerator, model, output_dir,
-                      f"adapter_epoch_{epoch + 1}.pt")
+                      "latest_adapter.pt", step=global_step)
         avg = running_loss / max(running_count, 1)
         accelerator.print(
             f"Epoch {epoch + 1} done | avg_loss={avg:.4f} | "
@@ -281,13 +284,13 @@ def _validate(model, loader, accelerator) -> float:
     return total / max(count, 1)
 
 
-def _save_adapter(accelerator, model, output_dir, filename) -> None:
+def _save_adapter(accelerator, model, output_dir, filename, step: int = 0) -> None:
     if not accelerator.is_main_process:
         return
     unwrapped = accelerator.unwrap_model(model)
     path = os.path.join(output_dir, filename)
-    torch.save(unwrapped.adapter.state_dict(), path)
-    accelerator.print(f"  checkpoint: {path}")
+    torch.save({"step": step, "adapter": unwrapped.adapter.state_dict()}, path)
+    accelerator.print(f"  checkpoint: {path}  (step {step})")
 
 
 @torch.no_grad()
