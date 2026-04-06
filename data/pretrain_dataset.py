@@ -17,17 +17,40 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
+def _extract_caption(item: dict) -> str:
+    """Extract caption text from either metadata format.
+
+    Priority: ``blip_caption`` field > ``conversations`` GPT turn > ``caption``.
+    """
+    if "blip_caption" in item:
+        return item["blip_caption"]
+
+    if "conversations" in item:
+        for turn in item["conversations"]:
+            if turn.get("from") == "gpt":
+                return turn.get("value", "")
+
+    return item.get("caption", "")
+
+
 class PretrainDataset(Dataset):
     """Simple image + caption dataset for visual-language alignment.
 
-    Metadata format (JSON list)::
+    Supports two LCS-558K metadata formats:
 
-        [{"id": "...", "image": "path/to/img.jpg", "blip_caption": "..."}, ...]
+    **Meta format** (``blip_laion_cc_sbu_558k_meta.json``)::
+
+        [{"id": "...", "image": "path.jpg", "blip_caption": "..."}, ...]
+
+    **Conversations format** (``blip_laion_cc_sbu_558k.json``)::
+
+        [{"id": "...", "image": "path.jpg",
+          "conversations": [{"from": "human", ...}, {"from": "gpt", "value": "caption"}]}, ...]
 
     Parameters
     ----------
     metadata_path : str
-        Path to the JSON metadata file.
+        Path to the JSON metadata file (either format).
     image_root : str
         Root directory that ``image`` paths are relative to.
     processor : SiglipImageProcessor
@@ -62,7 +85,7 @@ class PretrainDataset(Dataset):
             if not os.path.isfile(img_path):
                 skipped += 1
                 continue
-            caption = item.get("blip_caption", item.get("caption", ""))
+            caption = _extract_caption(item)
             if not caption:
                 skipped += 1
                 continue

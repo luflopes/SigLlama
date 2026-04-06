@@ -18,8 +18,9 @@ visual_dim: 768       # SigLIP hidden size
 llm_dim: 2048         # TinyLlama hidden size
 
 # --- Data ---
-metadata_path: "/data/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
-image_root: "/data/lcs-558k"
+# Supports both formats: *_meta.json (blip_caption) or *.json (conversations)
+metadata_path: "/datasets/deepfake/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
+image_root: "/datasets/deepfake/lcs-558k"
 max_text_length: 128
 val_size: 1000        # held-out samples for validation
 
