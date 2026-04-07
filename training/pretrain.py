@@ -80,13 +80,17 @@ def main() -> None:
     processor = AutoImageProcessor.from_pretrained(cfg["siglip_model"])
 
     # ---- dataset ----
+    use_prompt = cfg.get("use_prompt", False)
     full_dataset = PretrainDataset(
         metadata_path=cfg["metadata_path"],
         image_root=cfg["image_root"],
         processor=processor,
         tokenizer=tokenizer,
         max_length=cfg.get("max_text_length", 128),
+        use_prompt=use_prompt,
     )
+    stage_label = "1b (instruction)" if use_prompt else "1a (alignment)"
+    accelerator.print(f"Stage: {stage_label}")
 
     val_size = min(cfg.get("val_size", 1000), int(0.01 * len(full_dataset)))
     train_size = len(full_dataset) - val_size
@@ -254,6 +258,7 @@ def main() -> None:
                 _generate_samples(
                     model, val_ds, processor, tokenizer,
                     accelerator, output_dir, global_step,
+                    use_prompt=use_prompt,
                 )
                 model.train()
 
@@ -296,7 +301,7 @@ def _save_adapter(accelerator, model, output_dir, filename, step: int = 0) -> No
 @torch.no_grad()
 def _generate_samples(
     model, val_ds, processor, tokenizer, accelerator, output_dir, step,
-    n: int = 5,
+    n: int = 5, use_prompt: bool = False,
 ) -> None:
     unwrapped = accelerator.unwrap_model(model)
     unwrapped.eval()
@@ -308,8 +313,20 @@ def _generate_samples(
         if sample is None:
             continue
         pv = sample["pixel_values"].unsqueeze(0).to(device)
-        gen = unwrapped.generate(pv, tokenizer, max_new_tokens=64)
+
+        prompt_text = None
+        if use_prompt:
+            underlying = val_ds
+            if hasattr(underlying, "dataset"):
+                underlying = underlying.dataset
+            raw_sample = underlying.samples[val_ds.indices[i] if hasattr(val_ds, "indices") else i]
+            prompt_text = raw_sample.get("prompt") or None
+
+        gen = unwrapped.generate(pv, tokenizer, prompt=prompt_text, max_new_tokens=64)
         ref = tokenizer.decode(sample["input_ids"], skip_special_tokens=True)
+
+        if prompt_text:
+            lines.append(f"[{i}] prompt: {prompt_text}")
         lines.append(f"[{i}] ref : {ref}")
         lines.append(f"     gen : {gen[0]}")
 

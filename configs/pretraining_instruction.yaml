@@ -1,0 +1,47 @@
+# =============================================================
+# Stage 1b — Instruction tuning on LCS-558K (conversations)
+# =============================================================
+# Continues from the Stage 1a adapter checkpoint.  The model now
+# learns to follow human instructions — the loss is computed only
+# on the GPT (answer) tokens, not on the prompt.
+#
+# Usage:
+#   accelerate launch training/pretrain.py \
+#       --config configs/pretraining_instruction.yaml \
+#       --resume outputs/pretraining/best_adapter.pt
+
+seed: 0
+
+# --- Models ---
+siglip_model: "google/siglip-base-patch16-224"
+llm_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+visual_dim: 768
+llm_dim: 2048
+
+# --- Data ---
+metadata_path: "/datasets/deepfake/lcs-558k/blip_laion_cc_sbu_558k.json"
+image_root: "/datasets/deepfake/lcs-558k"
+max_text_length: 128
+val_size: 1000
+use_prompt: true
+
+# --- Training ---
+max_epochs: 1
+batch_size: 32
+gradient_accumulation_steps: 1
+num_workers: 4
+
+learning_rate: 2.0e-4         # lower LR — fine-tuning from aligned adapter
+weight_decay: 0.0
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+# --- Logging & checkpointing ---
+log_interval: 100
+save_interval: 2000
+val_interval: 2000
+sample_interval: 5000
+output_dir: "outputs/pretraining_instruction"

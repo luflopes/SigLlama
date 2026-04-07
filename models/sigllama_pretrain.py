@@ -98,20 +98,32 @@ class SigLlamaForPretraining(nn.Module):
         self,
         pixel_values: torch.Tensor,
         tokenizer: AutoTokenizer,
+        prompt: str | None = None,
         max_new_tokens: int = 64,
     ) -> list[str]:
         was_training = self.training
         self.eval()
 
+        # Match the dtype of the LLM weights (needed when training with mixed precision)
+        llm_dtype = self.llm.model.embed_tokens.weight.dtype
+
         visual_features = self.siglip(pixel_values=pixel_values).last_hidden_state
-        visual_embeds = self.adapter(visual_features)
+        visual_embeds = self.adapter(visual_features).to(llm_dtype)
 
         B = pixel_values.shape[0]
         device = pixel_values.device
 
-        cur_ids = torch.full(
-            (B, 1), tokenizer.bos_token_id, dtype=torch.long, device=device
-        )
+        if prompt:
+            prompt_enc = tokenizer(
+                prompt, add_special_tokens=True, return_tensors="pt"
+            )
+            prompt_ids = prompt_enc["input_ids"].to(device)          # [1, L]
+            prompt_ids = prompt_ids.expand(B, -1)                    # [B, L]
+            cur_ids = prompt_ids
+        else:
+            cur_ids = torch.full(
+                (B, 1), tokenizer.bos_token_id, dtype=torch.long, device=device
+            )
 
         for _ in range(max_new_tokens):
             text_embeds = self.llm.model.embed_tokens(cur_ids)
