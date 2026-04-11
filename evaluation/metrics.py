@@ -2,21 +2,147 @@
 
 Includes text-generation quality metrics (for explanations) and
 classification metrics (for deepfake detection accuracy).
+
+Dependencies::
+
+    pip install nltk rouge-score bert-score sentence-transformers
 """
 from __future__ import annotations
 
+import re
+from collections import Counter
 
-def compute_bleu(predictions: list[str], references: list[str]) -> float:
-    """Compute corpus-level BLEU score."""
-    # TODO: implement with sacrebleu or nltk
-    raise NotImplementedError
+import numpy as np
+
+
+# ------------------------------------------------------------------
+# Text generation metrics
+# ------------------------------------------------------------------
+
+def compute_bleu(predictions: list[str], references: list[str]) -> dict[str, float]:
+    """Compute corpus-level BLEU-1..4 using NLTK."""
+    from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
+
+    refs = [[ref.split()] for ref in references]
+    hyps = [pred.split() for pred in predictions]
+    smooth = SmoothingFunction().method1
+
+    scores = {}
+    for n in range(1, 5):
+        weights = tuple(1.0 / n if i < n else 0.0 for i in range(4))
+        scores[f"bleu_{n}"] = corpus_bleu(refs, hyps, weights=weights, smoothing_function=smooth)
+
+    return scores
 
 
 def compute_rouge(predictions: list[str], references: list[str]) -> dict[str, float]:
-    """Compute ROUGE-1, ROUGE-2, ROUGE-L scores."""
-    # TODO: implement with rouge_score
-    raise NotImplementedError
+    """Compute ROUGE-1, ROUGE-2, ROUGE-L using rouge-score."""
+    from rouge_score import rouge_scorer
 
+    scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
+
+    r1, r2, rl = [], [], []
+    for pred, ref in zip(predictions, references):
+        s = scorer.score(ref, pred)
+        r1.append(s["rouge1"].fmeasure)
+        r2.append(s["rouge2"].fmeasure)
+        rl.append(s["rougeL"].fmeasure)
+
+    return {
+        "rouge_1": float(np.mean(r1)),
+        "rouge_2": float(np.mean(r2)),
+        "rouge_l": float(np.mean(rl)),
+    }
+
+
+def compute_bertscore(predictions: list[str], references: list[str]) -> dict[str, float]:
+    """Compute BERTScore (precision, recall, F1)."""
+    from bert_score import score as bert_score
+
+    P, R, F1 = bert_score(predictions, references, lang="en", verbose=False)
+    return {
+        "bertscore_p": float(P.mean()),
+        "bertscore_r": float(R.mean()),
+        "bertscore_f1": float(F1.mean()),
+    }
+
+
+def compute_sentence_bert(predictions: list[str], references: list[str]) -> float:
+    """Compute mean cosine similarity using Sentence-BERT."""
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    pred_emb = model.encode(predictions, convert_to_tensor=True)
+    ref_emb = model.encode(references, convert_to_tensor=True)
+
+    cos_sim = (pred_emb * ref_emb).sum(dim=1) / (
+        pred_emb.norm(dim=1) * ref_emb.norm(dim=1) + 1e-8
+    )
+    return float(cos_sim.mean())
+
+
+def compute_meteor(predictions: list[str], references: list[str]) -> float:
+    """Compute mean METEOR score using NLTK."""
+    import nltk
+    from nltk.translate.meteor_score import meteor_score
+
+    nltk.download("wordnet", quiet=True)
+
+    scores = []
+    for pred, ref in zip(predictions, references):
+        s = meteor_score([ref.split()], pred.split())
+        scores.append(s)
+    return float(np.mean(scores))
+
+
+def compute_cider(predictions: list[str], references: list[str]) -> float:
+    """Compute CIDEr score (simplified TF-IDF based)."""
+    from collections import defaultdict
+
+    def _ngrams(tokens, n):
+        return [tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
+
+    doc_freq = defaultdict(int)
+    N = len(references)
+    for ref in references:
+        seen = set()
+        for n in range(1, 5):
+            for ng in _ngrams(ref.split(), n):
+                if ng not in seen:
+                    doc_freq[ng] += 1
+                    seen.add(ng)
+
+    def _tfidf(text):
+        tokens = text.split()
+        vec = Counter()
+        for n in range(1, 5):
+            for ng in _ngrams(tokens, n):
+                tf = 1.0 / max(len(tokens), 1)
+                idf = np.log(max(N, 1) / (1.0 + doc_freq.get(ng, 0)))
+                vec[ng] += tf * idf
+        return vec
+
+    scores = []
+    for pred, ref in zip(predictions, references):
+        v_pred = _tfidf(pred)
+        v_ref = _tfidf(ref)
+
+        if not v_pred or not v_ref:
+            scores.append(0.0)
+            continue
+
+        all_keys = set(v_pred) | set(v_ref)
+        dot = sum(v_pred.get(k, 0) * v_ref.get(k, 0) for k in all_keys)
+        norm_p = np.sqrt(sum(v ** 2 for v in v_pred.values()))
+        norm_r = np.sqrt(sum(v ** 2 for v in v_ref.values()))
+        scores.append(dot / (norm_p * norm_r + 1e-8))
+
+    return float(np.mean(scores)) * 10.0
+
+
+# ------------------------------------------------------------------
+# Classification metrics
+# ------------------------------------------------------------------
 
 def compute_detection_accuracy(
     predicted_labels: list[str], true_labels: list[str]
@@ -25,6 +151,50 @@ def compute_detection_accuracy(
     correct = sum(p == t for p, t in zip(predicted_labels, true_labels))
     return correct / len(true_labels) if true_labels else 0.0
 
+
+def parse_real_fake(text: str) -> str:
+    """Parse model output into 'real' or 'fake' label."""
+    text_lower = text.lower()
+    if re.search(r"\bfake\b", text_lower):
+        return "fake"
+    if re.search(r"\breal\b", text_lower):
+        return "real"
+    return "unknown"
+
+
+def compute_detection_f1(
+    predicted_labels: list[str], true_labels: list[str]
+) -> dict[str, float]:
+    """Compute precision, recall, and F1 for fake detection."""
+    tp = fp = fn = tn = 0
+    for pred, true in zip(predicted_labels, true_labels):
+        if true == "fake":
+            if pred == "fake":
+                tp += 1
+            else:
+                fn += 1
+        else:
+            if pred == "fake":
+                fp += 1
+            else:
+                tn += 1
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    accuracy = (tp + tn) / (tp + fp + fn + tn) if (tp + fp + fn + tn) > 0 else 0.0
+
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
+
+
+# ------------------------------------------------------------------
+# MoE analysis
+# ------------------------------------------------------------------
 
 def compute_expert_utilisation(
     expert_counts: dict[str, int], total_tokens: int

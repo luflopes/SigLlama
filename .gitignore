@@ -30,6 +30,9 @@ wandb/
 # Data artifacts (regenerable)
 *.ndjson
 
+# Private / dataset scripts (synced via rsync)
+faceforensics/
+
 # IDE
 .vscode/
 .idea/

@@ -1,45 +1,55 @@
 # =============================================================
-# Stage 2 — Fine-tuning for deepfake detection with MoE
+# Stage 2a — Fine-tuning for Deepfake VQA (DD-VQA)
 # =============================================================
+# SigLIP (frozen) + Adapter (trainable, from Stage 1) + TinyLlama (LoRA)
+# No MoE, no soft tokens at this stage.
+#
+# Usage:
+#   python training/finetune.py --config configs/finetuning.yaml
+#   accelerate launch training/finetune.py --config configs/finetuning.yaml
 
-_base_: base.yaml
+seed: 42
 
-# --- Checkpoint from Stage 1 ---
+# --- Models ---
+siglip_model: "google/siglip-base-patch16-224"
+llm_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+visual_dim: 768
+llm_dim: 2048
+
+# --- Stage 1 checkpoint ---
 adapter_checkpoint: "outputs/pretraining/best_adapter.pt"
 
 # --- Data ---
-metadata_path: "/data/deepfake/metadata.json"
-image_root: "/data/deepfake/images"
-soft_tokens_path: "/data/deepfake/soft_tokens.ndjson"
-
-# --- Freezing ---
-freeze_siglip: true
-freeze_llm: false           # unfreeze or use LoRA
+# Prepared by scripts/prepare_ddvqa.py
+train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
+image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+max_text_length: 256
 
 # --- LoRA (applied to TinyLlama) ---
-use_lora: true
 lora_rank: 16
 lora_alpha: 32
 lora_target_modules: ["q_proj", "v_proj"]
-
-# --- MoE ---
-moe:
-  num_experts: 4
-  top_k: 2
-  expert_type: "lora"        # "mlp" or "lora"
-  lora_rank: 16
-  aux_loss_weight: 0.01
+lora_dropout: 0.05
 
 # --- Training ---
+max_epochs: 5
 batch_size: 16
+gradient_accumulation_steps: 2    # effective batch size = 32
 num_workers: 4
-learning_rate: 2.0e-5
-weight_decay: 0.01
-warmup_steps: 200
-max_epochs: 10
-max_text_length: 512
 
-# --- Logging ---
+learning_rate: 2.0e-4             # for LoRA params
+adapter_lr: 5.0e-5                # lower LR for pre-trained adapter
+weight_decay: 0.01
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+# --- Logging & checkpointing ---
 log_interval: 50
 save_interval: 500
+val_interval: 500
+sample_interval: 1000
 output_dir: "outputs/finetuning"

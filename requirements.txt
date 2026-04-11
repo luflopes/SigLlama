@@ -9,3 +9,8 @@ Pillow
 numpy
 tqdm
 pyyaml
+opencv-python
+nltk
+rouge-score
+bert-score
+sentence-transformers
