@@ -138,6 +138,11 @@ class SigLlamaForFinetune(nn.Module):
         tokenizer: AutoTokenizer,
         prompt: str | None = None,
         max_new_tokens: int = 128,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 50,
+        repetition_penalty: float = 1.2,
+        do_sample: bool = True,
     ) -> list[str]:
         was_training = self.training
         self.eval()
@@ -165,7 +170,37 @@ class SigLlamaForFinetune(nn.Module):
             inputs_embeds = torch.cat([visual_embeds, text_embeds], dim=1)
 
             logits = self.llm(inputs_embeds=inputs_embeds, use_cache=False).logits
-            next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            next_logits = logits[:, -1, :]
+
+            if repetition_penalty != 1.0:
+                for b in range(B):
+                    prev_tokens = cur_ids[b].tolist()
+                    for tok_id in set(prev_tokens):
+                        if next_logits[b, tok_id] > 0:
+                            next_logits[b, tok_id] /= repetition_penalty
+                        else:
+                            next_logits[b, tok_id] *= repetition_penalty
+
+            if do_sample and temperature > 0:
+                next_logits = next_logits / temperature
+
+                if top_k > 0:
+                    top_k_vals, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
+                    threshold = top_k_vals[:, -1].unsqueeze(-1)
+                    next_logits[next_logits < threshold] = float("-inf")
+
+                if 0.0 < top_p < 1.0:
+                    sorted_logits, sorted_idx = torch.sort(next_logits, descending=True)
+                    cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    remove_mask = cum_probs - torch.softmax(sorted_logits, dim=-1) >= top_p
+                    sorted_logits[remove_mask] = float("-inf")
+                    next_logits = sorted_logits.scatter(1, sorted_idx, sorted_logits)
+
+                probs = torch.softmax(next_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = next_logits.argmax(dim=-1, keepdim=True)
+
             cur_ids = torch.cat([cur_ids, next_token], dim=1)
 
             if (next_token == tokenizer.eos_token_id).all():

@@ -55,6 +55,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default="outputs/evaluation")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--max-new-tokens", type=int, default=128)
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--top-p", type=float, default=0.9)
+    p.add_argument("--top-k", type=int, default=50)
+    p.add_argument("--repetition-penalty", type=float, default=1.2)
+    p.add_argument("--greedy", action="store_true", help="Use greedy decoding")
     p.add_argument("--skip-generation", action="store_true",
                     help="Skip generation, only compute metrics from existing results")
     return p.parse_args()
@@ -152,6 +157,11 @@ def main() -> None:
                 gen = model.generate(
                     pv, tokenizer, prompt=question,
                     max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    top_k=args.top_k,
+                    repetition_penalty=args.repetition_penalty,
+                    do_sample=not args.greedy,
                 )
 
             prediction = gen[0]

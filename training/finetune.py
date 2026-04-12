@@ -353,7 +353,10 @@ def _generate_samples(
         raw = val_ds.samples[i]
         question = raw["question"]
 
-        gen = unwrapped.generate(pv, tokenizer, prompt=question, max_new_tokens=128)
+        gen = unwrapped.generate(
+            pv, tokenizer, prompt=question, max_new_tokens=128,
+            temperature=0.7, top_p=0.9, repetition_penalty=1.2,
+        )
 
         ref_ids = sample["input_ids"]
         ref = tokenizer.decode(ref_ids, skip_special_tokens=True)
