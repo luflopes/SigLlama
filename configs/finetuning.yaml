@@ -33,10 +33,11 @@ lora_target_modules: ["q_proj", "v_proj"]
 lora_dropout: 0.05
 
 # --- Training ---
-max_epochs: 5
+max_epochs: 10
 batch_size: 16
 gradient_accumulation_steps: 2    # effective batch size = 32
 num_workers: 4
+balanced_sampling: true           # oversample real class to 50/50
 
 learning_rate: 2.0e-4             # for LoRA params
 adapter_lr: 5.0e-5                # lower LR for pre-trained adapter
@@ -52,4 +53,4 @@ log_interval: 50
 save_interval: 500
 val_interval: 500
 sample_interval: 1000
-output_dir: "outputs/finetuning"
+output_dir: "outputs/finetuning_v2"

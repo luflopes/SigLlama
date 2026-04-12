@@ -28,7 +28,7 @@ import torch
 import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
@@ -90,16 +90,39 @@ def main() -> None:
         tokenizer=tokenizer,
         max_length=cfg.get("max_text_length", 256),
     )
-    accelerator.print(f"Train: {len(train_ds)}  |  Val: {len(val_ds)}")
+    # ---- class balance stats ----
+    n_real = sum(1 for s in train_ds.samples if s["is_real"])
+    n_fake = len(train_ds) - n_real
+    accelerator.print(
+        f"Train: {len(train_ds)} (real={n_real}, fake={n_fake})  |  Val: {len(val_ds)}"
+    )
 
     bs = cfg.get("batch_size", 16)
     nw = cfg.get("num_workers", 4)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=bs, shuffle=True,
-        num_workers=nw, collate_fn=collate_vqa,
-        pin_memory=True, drop_last=True,
-    )
+    # Balanced sampling: oversample minority class (real)
+    if cfg.get("balanced_sampling", True) and n_real > 0 and n_fake > 0:
+        weight_real = n_fake / n_real
+        sample_weights = [
+            weight_real if s["is_real"] else 1.0 for s in train_ds.samples
+        ]
+        sampler = WeightedRandomSampler(
+            sample_weights, num_samples=len(train_ds), replacement=True,
+        )
+        accelerator.print(
+            f"Balanced sampling: real weight={weight_real:.2f}, fake weight=1.0"
+        )
+        train_loader = DataLoader(
+            train_ds, batch_size=bs, sampler=sampler,
+            num_workers=nw, collate_fn=collate_vqa,
+            pin_memory=True, drop_last=True,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_size=bs, shuffle=True,
+            num_workers=nw, collate_fn=collate_vqa,
+            pin_memory=True, drop_last=True,
+        )
     val_loader = DataLoader(
         val_ds, batch_size=bs, shuffle=False,
         num_workers=nw, collate_fn=collate_vqa,
@@ -358,12 +381,17 @@ def _generate_samples(
             temperature=0.7, top_p=0.9, repetition_penalty=1.2,
         )
 
-        ref_ids = sample["input_ids"]
-        ref = tokenizer.decode(ref_ids, skip_special_tokens=True)
+        raw_gen = gen[0]
+        if raw_gen.startswith(question):
+            gen_answer = raw_gen[len(question):].strip()
+        else:
+            gen_answer = raw_gen.strip()
+
+        ref_answer = raw["answer"]
 
         lines.append(f"[{i}] Q: {question}")
-        lines.append(f"     ref : {ref}")
-        lines.append(f"     gen : {gen[0]}")
+        lines.append(f"     ref : {ref_answer}")
+        lines.append(f"     gen : {gen_answer}")
 
     text = "\n".join(lines) + "\n"
     accelerator.print(text)

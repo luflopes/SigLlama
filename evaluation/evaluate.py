@@ -164,8 +164,14 @@ def main() -> None:
                     do_sample=not args.greedy,
                 )
 
-            prediction = gen[0]
+            raw_prediction = gen[0]
             reference = raw["answer"]
+
+            # Strip question prefix from prediction (generate() includes the prompt)
+            if raw_prediction.startswith(question):
+                prediction = raw_prediction[len(question):].strip()
+            else:
+                prediction = raw_prediction.strip()
 
             all_predictions.append(prediction)
             all_references.append(reference)
@@ -191,9 +197,13 @@ def main() -> None:
         with open(predictions_path) as f:
             for line in f:
                 item = json.loads(line)
-                all_predictions.append(item["prediction"])
+                pred = item["prediction"]
+                q = item["question"]
+                if pred.startswith(q):
+                    pred = pred[len(q):].strip()
+                all_predictions.append(pred)
                 all_references.append(item["reference"])
-                all_questions.append(item["question"])
+                all_questions.append(q)
                 all_is_real.append(item["is_real"])
 
     # ---- Compute Metrics ----
