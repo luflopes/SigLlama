@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, SiglipVisionModel
 
-from .adapter import VisualAdapter
+from .adapter import CrossAttentionAdapter #, VisualAdapter
 
 
 class SigLlamaForPretraining(nn.Module):
@@ -43,7 +43,7 @@ class SigLlamaForPretraining(nn.Module):
         self.siglip = SiglipVisionModel.from_pretrained(siglip_model)
         self.siglip.requires_grad_(False)
 
-        self.adapter = VisualAdapter(visual_dim=visual_dim, llm_dim=llm_dim)
+        self.adapter = CrossAttentionAdapter(visual_dim=visual_dim, llm_dim=llm_dim)
 
         self.llm = AutoModelForCausalLM.from_pretrained(llm_model)
         self.llm.requires_grad_(False)
