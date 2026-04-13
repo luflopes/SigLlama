@@ -92,11 +92,18 @@ def load_model(cfg: dict, checkpoint_dir: str, device: torch.device) -> SigLlama
 
     lora_path = os.path.join(checkpoint_dir, "lora")
     if os.path.isdir(lora_path):
-        from peft import PeftModel
-        model.llm = PeftModel.from_pretrained(
-            model.llm.get_base_model(), lora_path
-        )
-        logger.info("Loaded LoRA from %s", lora_path)
+        from peft import set_peft_model_state_dict
+        from safetensors.torch import load_file
+
+        lora_weights_path = os.path.join(lora_path, "adapter_model.safetensors")
+        if os.path.isfile(lora_weights_path):
+            lora_state = load_file(lora_weights_path)
+        else:
+            bin_path = os.path.join(lora_path, "adapter_model.bin")
+            lora_state = torch.load(bin_path, map_location="cpu", weights_only=True)
+
+        set_peft_model_state_dict(model.llm, lora_state)
+        logger.info("Loaded LoRA weights from %s", lora_path)
 
     model.to(device)
     model.eval()
