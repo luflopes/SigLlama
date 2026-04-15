@@ -1,15 +1,13 @@
-"""Evaluation script for SigLlama Stage 2.
+"""Evaluate FaceGroundVLM on DD-VQA (or any VQA split).
 
-Loads a fine-tuned checkpoint, generates answers for a test split,
-and computes text-generation quality + detection metrics.
+Metrics follow TruthLens: detection accuracy, BLEU-3, BLEU-4, ROUGE-L, CIDEr.
 
 Usage::
 
     python evaluation/evaluate.py \
-        --config configs/finetuning.yaml \
-        --checkpoint outputs/finetuning/best_checkpoint \
-        --split test \
-        --output-dir outputs/evaluation
+        --config configs/stage2_finetune.yaml \
+        --checkpoint outputs/stage2_finetune/checkpoint-final.pt \
+        --split val
 """
 from __future__ import annotations
 
@@ -17,248 +15,174 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 
 import torch
 import yaml
-from torch.utils.data import DataLoader
+from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
-from transformers import AutoImageProcessor, AutoTokenizer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from data.deepfake_vqa_dataset import DeepfakeVQADataset, collate_vqa  # noqa: E402
-from models.sigllama_finetune import SigLlamaForFinetune  # noqa: E402
-from evaluation.metrics import (  # noqa: E402
-    compute_bertscore,
-    compute_bleu,
-    compute_cider,
-    compute_detection_f1,
-    compute_meteor,
-    compute_rouge,
-    compute_sentence_bert,
-    parse_real_fake,
-)
+from data.ddvqa_dataset import DDVQADataset, collate_ddvqa  # noqa: E402
+from models.face_ground_vlm import FaceGroundVLM  # noqa: E402
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger("evaluate")
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Evaluate SigLlama on deepfake VQA")
-    p.add_argument("--config", required=True, help="Path to finetuning YAML config")
-    p.add_argument("--checkpoint", required=True, help="Path to checkpoint directory")
-    p.add_argument("--split", default="test", choices=["val", "test"])
-    p.add_argument("--output-dir", default="outputs/evaluation")
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", required=True)
+    p.add_argument("--checkpoint", required=True, help="Checkpoint .pt with adapter + lora")
+    p.add_argument("--split", default="val", choices=["val", "test"])
+    p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--max-new-tokens", type=int, default=128)
-    p.add_argument("--temperature", type=float, default=0.7)
-    p.add_argument("--top-p", type=float, default=0.9)
-    p.add_argument("--top-k", type=int, default=50)
-    p.add_argument("--repetition-penalty", type=float, default=1.2)
-    p.add_argument("--greedy", action="store_true", help="Use greedy decoding")
-    p.add_argument("--skip-generation", action="store_true",
-                    help="Skip generation, only compute metrics from existing results")
+    p.add_argument("--output-dir", default=None)
     return p.parse_args()
 
 
-def load_model(cfg: dict, checkpoint_dir: str, device: torch.device) -> SigLlamaForFinetune:
-    """Load model from checkpoint with adapter + LoRA weights."""
-    lora_target = cfg.get("lora_target_modules", ["q_proj", "v_proj"])
-    if isinstance(lora_target, str):
-        lora_target = [m.strip() for m in lora_target.split(",")]
+def parse_real_fake(text: str) -> str:
+    t = text.lower().strip()
+    if re.search(r"\breal\b", t):
+        if not re.search(r"\bfake\b", t):
+            return "real"
+    if re.search(r"\bfake\b", t):
+        return "fake"
+    return "fake"
 
-    model = SigLlamaForFinetune(
-        siglip_model=cfg["siglip_model"],
-        llm_model=cfg["llm_model"],
-        visual_dim=cfg.get("visual_dim", 768),
-        llm_dim=cfg.get("llm_dim", 2048),
-        adapter_checkpoint=None,
+
+def load_model(cfg: dict, checkpoint_path: str, device: torch.device) -> FaceGroundVLM:
+    model = FaceGroundVLM(
+        paligemma_model=cfg["paligemma_model"],
+        dinov2_model=cfg["dinov2_model"],
+        mof_strategy=cfg.get("mof_strategy", "interleave"),
+        use_lora=True,
         lora_rank=cfg.get("lora_rank", 16),
         lora_alpha=cfg.get("lora_alpha", 32),
-        lora_target_modules=lora_target,
-        lora_dropout=0.0,
+        lora_target_modules=cfg.get("lora_target_modules"),
+        lora_dropout=cfg.get("lora_dropout", 0.05),
     )
 
-    adapter_path = os.path.join(checkpoint_dir, "adapter.pt")
-    if os.path.isfile(adapter_path):
-        ckpt = torch.load(adapter_path, map_location="cpu", weights_only=True)
-        state = ckpt["adapter"] if isinstance(ckpt, dict) and "adapter" in ckpt else ckpt
-        model.adapter.load_state_dict(state)
-        logger.info("Loaded adapter from %s", adapter_path)
-
-    lora_path = os.path.join(checkpoint_dir, "lora")
-    if os.path.isdir(lora_path):
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    model.dino_adapter.load_state_dict(ckpt["adapter"])
+    if "lora" in ckpt:
         from peft import set_peft_model_state_dict
-        from safetensors.torch import load_file
-
-        lora_weights_path = os.path.join(lora_path, "adapter_model.safetensors")
-        if os.path.isfile(lora_weights_path):
-            lora_state = load_file(lora_weights_path)
-        else:
-            bin_path = os.path.join(lora_path, "adapter_model.bin")
-            lora_state = torch.load(bin_path, map_location="cpu", weights_only=True)
-
-        set_peft_model_state_dict(model.llm, lora_state)
-        logger.info("Loaded LoRA weights from %s", lora_path)
+        set_peft_model_state_dict(model.paligemma.language_model, ckpt["lora"])
+    logger.info("Loaded checkpoint from %s (step %s)", checkpoint_path, ckpt.get("step", "?"))
 
     model.to(device)
     model.eval()
     return model
 
 
-def main() -> None:
+def main():
     args = parse_args()
-
-    with open(args.config, "r") as f:
+    with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    results_path = os.path.join(args.output_dir, "results.json")
-    predictions_path = os.path.join(args.output_dir, "predictions.jsonl")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(cfg, args.checkpoint, device)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg["llm_model"])
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    processor = AutoImageProcessor.from_pretrained(cfg["siglip_model"])
+    from transformers import AutoProcessor
+    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
+    tokenizer = processor.tokenizer
 
-    # ---- Dataset ----
-    if args.split == "test":
-        meta_path = cfg.get("test_metadata", cfg["val_metadata"].replace("val.", "test."))
-    else:
-        meta_path = cfg["val_metadata"]
+    dino_transform = Compose([
+        Resize((448, 448)),
+        ToTensor(),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 
-    dataset = DeepfakeVQADataset(
-        metadata_path=meta_path,
+    meta_key = "val_metadata" if args.split == "val" else "test_metadata"
+    metadata_path = cfg.get(meta_key, cfg.get("val_metadata"))
+
+    dataset = DDVQADataset(
+        metadata_path=metadata_path,
         image_root=cfg["image_root"],
         processor=processor,
-        tokenizer=tokenizer,
+        dino_transform=dino_transform,
         max_length=cfg.get("max_text_length", 256),
     )
 
-    if not args.skip_generation:
-        model = load_model(cfg, args.checkpoint, device)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=2,
+        collate_fn=collate_ddvqa,
+    )
 
-        logger.info("Generating predictions for %d samples...", len(dataset))
+    predictions: list[str] = []
+    references: list[str] = []
+    pred_labels: list[str] = []
+    true_labels: list[str] = []
 
-        all_predictions = []
-        all_references = []
-        all_questions = []
-        all_is_real = []
+    logger.info("Running inference on %d samples...", len(dataset))
+    for batch in tqdm(loader, desc="Evaluating"):
+        if batch is None:
+            continue
 
-        for i in tqdm(range(len(dataset)), desc="Generating"):
-            sample = dataset[i]
-            if sample is None:
-                continue
+        pv_sig = batch["pixel_values_siglip"].to(device)
+        pv_din = batch["pixel_values_dino"].to(device)
+        inp_ids = batch["input_ids"].to(device)
+        attn = batch["attention_mask"].to(device)
 
-            raw = dataset.samples[i]
-            pv = sample["pixel_values"].unsqueeze(0).to(device)
-            question = raw["question"]
+        with torch.no_grad():
+            gen_ids = model.generate(
+                pixel_values_siglip=pv_sig,
+                pixel_values_dino=pv_din,
+                input_ids=inp_ids,
+                attention_mask=attn,
+                max_new_tokens=args.max_new_tokens,
+            )
 
-            with torch.no_grad():
-                gen = model.generate(
-                    pv, tokenizer, prompt=question,
-                    max_new_tokens=args.max_new_tokens,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    top_k=args.top_k,
-                    repetition_penalty=args.repetition_penalty,
-                    do_sample=not args.greedy,
-                )
+        gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
 
-            raw_prediction = gen[0]
-            reference = raw["answer"]
+        ref_ids = batch["labels"]
+        ref_ids[ref_ids == -100] = tokenizer.pad_token_id or 0
+        ref_texts = tokenizer.batch_decode(ref_ids, skip_special_tokens=True)
 
-            # Strip question prefix from prediction (generate() includes the prompt)
-            if raw_prediction.startswith(question):
-                prediction = raw_prediction[len(question):].strip()
-            else:
-                prediction = raw_prediction.strip()
+        for gen, ref, lbl in zip(gen_texts, ref_texts, batch["label_str"]):
+            predictions.append(gen.strip())
+            references.append(ref.strip())
+            pred_labels.append(parse_real_fake(gen))
+            true_labels.append(lbl)
 
-            all_predictions.append(prediction)
-            all_references.append(reference)
-            all_questions.append(question)
-            all_is_real.append(raw.get("is_real", False))
+    from evaluation.metrics import (
+        compute_bleu,
+        compute_rouge,
+        compute_cider,
+        compute_detection_f1,
+    )
 
-        # Save predictions
-        with open(predictions_path, "w") as f:
-            for q, pred, ref, is_real in zip(
-                all_questions, all_predictions, all_references, all_is_real
-            ):
-                f.write(json.dumps({
-                    "question": q,
-                    "prediction": pred,
-                    "reference": ref,
-                    "is_real": is_real,
-                }) + "\n")
-        logger.info("Saved predictions to %s", predictions_path)
+    bleu = compute_bleu(predictions, references)
+    rouge = compute_rouge(predictions, references)
+    detection = compute_detection_f1(pred_labels, true_labels)
 
-    else:
-        logger.info("Loading existing predictions from %s", predictions_path)
-        all_predictions, all_references, all_questions, all_is_real = [], [], [], []
-        with open(predictions_path) as f:
-            for line in f:
-                item = json.loads(line)
-                pred = item["prediction"]
-                q = item["question"]
-                if pred.startswith(q):
-                    pred = pred[len(q):].strip()
-                all_predictions.append(pred)
-                all_references.append(item["reference"])
-                all_questions.append(q)
-                all_is_real.append(item["is_real"])
+    try:
+        cider_score = compute_cider(predictions, references)
+    except Exception as e:
+        logger.warning("CIDEr computation failed: %s", e)
+        cider_score = 0.0
 
-    # ---- Compute Metrics ----
-    logger.info("Computing metrics on %d samples...", len(all_predictions))
-    metrics: dict[str, float] = {}
+    results = {
+        **bleu,
+        **rouge,
+        "cider": cider_score,
+        **detection,
+    }
 
-    logger.info("  BLEU...")
-    metrics.update(compute_bleu(all_predictions, all_references))
+    output_dir = args.output_dir or os.path.join(cfg["output_dir"], "evaluation")
+    os.makedirs(output_dir, exist_ok=True)
 
-    logger.info("  ROUGE...")
-    metrics.update(compute_rouge(all_predictions, all_references))
+    with open(os.path.join(output_dir, "results.json"), "w") as f:
+        json.dump(results, f, indent=2)
 
-    logger.info("  BERTScore...")
-    metrics.update(compute_bertscore(all_predictions, all_references))
-
-    logger.info("  Sentence-BERT...")
-    metrics["sentence_bert"] = compute_sentence_bert(all_predictions, all_references)
-
-    logger.info("  METEOR...")
-    metrics["meteor"] = compute_meteor(all_predictions, all_references)
-
-    logger.info("  CIDEr...")
-    metrics["cider"] = compute_cider(all_predictions, all_references)
-
-    # Detection accuracy from general questions
-    general_preds = []
-    general_labels = []
-    for q, pred, is_real in zip(all_questions, all_predictions, all_is_real):
-        if "image" in q.lower() and ("real" in q.lower() or "fake" in q.lower()):
-            parsed = parse_real_fake(pred)
-            if parsed != "unknown":
-                general_preds.append(parsed)
-                general_labels.append("real" if is_real else "fake")
-
-    if general_preds:
-        logger.info("  Detection F1 (%d samples)...", len(general_preds))
-        metrics.update(compute_detection_f1(general_preds, general_labels))
-    else:
-        logger.warning("  No general questions found for detection metrics")
-
-    # ---- Save results ----
-    with open(results_path, "w") as f:
-        json.dump(metrics, f, indent=2)
-
-    logger.info("\n=== Results ===")
-    for k, v in sorted(metrics.items()):
-        logger.info("  %-20s: %.4f", k, v)
-    logger.info("Saved to %s", results_path)
+    logger.info("Results saved to %s/results.json", output_dir)
+    for k, v in sorted(results.items()):
+        logger.info("  %s: %.4f", k, v)
 
 
 if __name__ == "__main__":

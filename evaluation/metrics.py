@@ -1,4 +1,4 @@
-"""Evaluation metrics for SigLlama.
+"""Evaluation metrics for FaceGroundVLM.
 
 Includes text-generation quality metrics (for explanations) and
 classification metrics (for deepfake detection accuracy).
@@ -189,6 +189,74 @@ def compute_detection_f1(
         "precision": precision,
         "recall": recall,
         "f1": f1,
+    }
+
+
+# ------------------------------------------------------------------
+# Localization metrics (Phase 4+)
+# ------------------------------------------------------------------
+
+def parse_loc_tokens(text: str) -> list[tuple[int, int, int, int]]:
+    """Extract bounding boxes from <locYYYY><locXXXX>... sequences.
+
+    PaliGemma2 format: <loc_y1><loc_x1><loc_y2><loc_x2>.
+    Returns list of (y1, x1, y2, x2) tuples in [0, 1023] range.
+    """
+    import re
+    pattern = re.compile(
+        r"<loc(\d{4})><loc(\d{4})><loc(\d{4})><loc(\d{4})>"
+    )
+    return [
+        (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        for m in pattern.finditer(text)
+    ]
+
+
+def box_iou(box_a: tuple[int, ...], box_b: tuple[int, ...]) -> float:
+    """Compute IoU between two (y1, x1, y2, x2) boxes."""
+    y1 = max(box_a[0], box_b[0])
+    x1 = max(box_a[1], box_b[1])
+    y2 = min(box_a[2], box_b[2])
+    x2 = min(box_a[3], box_b[3])
+    inter = max(0, y2 - y1) * max(0, x2 - x1)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def compute_loc_metrics(
+    predictions: list[str],
+    references: list[str],
+) -> dict[str, float]:
+    """Compute localization metrics: mean IoU and region hit rate.
+
+    Matches predicted bounding boxes to the closest reference box.
+    """
+    all_ious: list[float] = []
+    hits = 0
+    total_ref_boxes = 0
+
+    for pred, ref in zip(predictions, references):
+        pred_boxes = parse_loc_tokens(pred)
+        ref_boxes = parse_loc_tokens(ref)
+        if not ref_boxes:
+            continue
+
+        total_ref_boxes += len(ref_boxes)
+        for rb in ref_boxes:
+            if not pred_boxes:
+                all_ious.append(0.0)
+                continue
+            best_iou = max(box_iou(pb, rb) for pb in pred_boxes)
+            all_ious.append(best_iou)
+            if best_iou > 0.3:
+                hits += 1
+
+    return {
+        "loc_mean_iou": float(np.mean(all_ious)) if all_ious else 0.0,
+        "loc_hit_rate_03": hits / total_ref_boxes if total_ref_boxes > 0 else 0.0,
+        "loc_total_ref_boxes": total_ref_boxes,
     }
 
 

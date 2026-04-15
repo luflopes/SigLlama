@@ -1,0 +1,389 @@
+"""Stage 2: DINO adapter + LoRA fine-tuning on DD-VQA (FaceGroundVLM)."""
+from __future__ import annotations
+
+import argparse
+import logging
+import math
+import os
+import random
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import torch
+import yaml
+from accelerate import Accelerator
+from accelerate.utils import set_seed
+from data.ddvqa_dataset import DDVQADataset, collate_ddvqa
+from models.face_ground_vlm import FaceGroundVLM
+from peft import get_peft_model_state_dict, set_peft_model_state_dict
+from torch.optim import AdamW
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision.transforms import Compose, Normalize, Resize, ToTensor
+from transformers import AutoProcessor, get_cosine_schedule_with_warmup
+
+logger = logging.getLogger(__name__)
+
+
+def load_config(path: str) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="FaceGroundVLM stage 2 (adapter + LoRA)")
+    p.add_argument("--config", type=str, required=True, help="YAML config path")
+    p.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Checkpoint path to resume (adapter, lora, optimizer state)",
+    )
+    return p.parse_args()
+
+
+def build_train_sampler(
+    train_ds: DDVQADataset, cfg: dict
+) -> WeightedRandomSampler | None:
+    if not cfg.get("balanced_sampling", False):
+        return None
+    n_real = sum(1 for s in train_ds.samples if s.get("label", "").lower() == "real")
+    n_fake = len(train_ds.samples) - n_real
+    wr = 1.0 / max(n_real, 1)
+    wf = 1.0 / max(n_fake, 1)
+    weights = [
+        wr if s.get("label", "").lower() == "real" else wf for s in train_ds.samples
+    ]
+    return WeightedRandomSampler(
+        weights,
+        num_samples=len(weights),
+        replacement=True,
+    )
+
+
+def build_dataloaders(cfg: dict, processor, dino_transform):
+    train_ds = DDVQADataset(
+        metadata_path=cfg["train_metadata"],
+        image_root=cfg["image_root"],
+        max_text_length=cfg["max_text_length"],
+        processor=processor,
+        dino_transform=dino_transform,
+    )
+    val_ds = DDVQADataset(
+        metadata_path=cfg["val_metadata"],
+        image_root=cfg["image_root"],
+        max_text_length=cfg["max_text_length"],
+        processor=processor,
+        dino_transform=dino_transform,
+    )
+    sampler = build_train_sampler(train_ds, cfg)
+    train_kwargs: dict = {
+        "batch_size": cfg["batch_size"],
+        "num_workers": cfg["num_workers"],
+        "collate_fn": collate_ddvqa,
+        "pin_memory": True,
+    }
+    if sampler is not None:
+        train_kwargs["sampler"] = sampler
+        train_kwargs["shuffle"] = False
+    else:
+        train_kwargs["shuffle"] = True
+    train_loader = DataLoader(train_ds, **train_kwargs)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=cfg["batch_size"],
+        shuffle=False,
+        num_workers=cfg["num_workers"],
+        collate_fn=collate_ddvqa,
+        pin_memory=True,
+    )
+    return train_loader, val_loader
+
+
+def validation_loss(model, val_loader, accelerator) -> float | None:
+    if val_loader is None:
+        return None
+    model.eval()
+    total = 0.0
+    count = 0
+    with torch.no_grad():
+        for batch in val_loader:
+            if batch is None:
+                continue
+            batch = {
+                k: v
+                for k, v in batch.items()
+                if k in ("pixel_values_siglip", "pixel_values_dino", "input_ids", "attention_mask", "labels")
+            }
+            outputs = model(**batch)
+            loss = outputs["loss"]
+            total += loss.detach().float().item()
+            count += 1
+    model.train()
+    if count == 0:
+        return None
+    t = torch.tensor(
+        [total, float(count)], device=accelerator.device, dtype=torch.float32
+    )
+    t = accelerator.reduce(t, reduction="sum")
+    return (t[0] / t[1]).item() if t[1] > 0 else None
+
+
+def maybe_sample(
+    model,
+    tokenizer,
+    batch,
+    accelerator,
+    max_new_tokens: int = 128,
+) -> None:
+    if batch is None:
+        return
+    model_unwrap = accelerator.unwrap_model(model)
+    batch = {
+        k: v
+        for k, v in batch.items()
+        if k in ("pixel_values_siglip", "pixel_values_dino", "input_ids", "attention_mask")
+    }
+    with torch.no_grad():
+        gen_ids = model_unwrap.generate(
+            **batch,
+            max_new_tokens=max_new_tokens,
+        )
+    texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+    logger.info("sample generation: %s", texts[: min(2, len(texts))])
+
+
+def load_adapter_checkpoint(model: FaceGroundVLM, path: str) -> None:
+    ckpt = torch.load(path, map_location="cpu")
+    state = ckpt["adapter"] if isinstance(ckpt, dict) and "adapter" in ckpt else ckpt
+    model.dino_adapter.load_state_dict(state)
+
+
+def load_lora_checkpoint(model: FaceGroundVLM, path: str) -> None:
+    ckpt = torch.load(path, map_location="cpu")
+    lora_sd = ckpt.get("lora", ckpt)
+    set_peft_model_state_dict(model.paligemma.language_model, lora_sd)
+
+
+def main() -> None:
+    logging.basicConfig(
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        level=logging.INFO,
+    )
+    args = parse_args()
+    cfg = load_config(args.config)
+    seed = int(cfg.get("seed", 42))
+    random.seed(seed)
+    torch.manual_seed(seed)
+    set_seed(seed)
+
+    output_dir = Path(cfg["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    accelerator = Accelerator(
+        gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
+        mixed_precision=cfg.get("mixed_precision", "no"),
+    )
+
+    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
+    tokenizer = processor.tokenizer
+
+    dino_transform = Compose(
+        [
+            Resize((448, 448)),
+            ToTensor(),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+    model = FaceGroundVLM(
+        paligemma_model=cfg["paligemma_model"],
+        dinov2_model=cfg["dinov2_model"],
+        mof_strategy=cfg["mof_strategy"],
+        use_lora=True,
+        lora_rank=int(cfg["lora_rank"]),
+        lora_alpha=int(cfg["lora_alpha"]),
+        lora_target_modules=cfg.get("lora_target_modules"),
+        lora_dropout=float(cfg.get("lora_dropout", 0.05)),
+    )
+    model.paligemma.language_model.enable_input_require_grads()
+
+    if cfg.get("gradient_checkpointing", True):
+        model.paligemma.language_model.gradient_checkpointing_enable()
+
+    load_adapter_checkpoint(model, cfg["adapter_checkpoint"])
+    if cfg.get("lora_checkpoint"):
+        load_lora_checkpoint(model, cfg["lora_checkpoint"])
+
+    train_loader, val_loader = build_dataloaders(cfg, processor, dino_transform)
+
+    adapter_params = list(model.dino_adapter.parameters())
+    lora_params = [
+        p for p in model.paligemma.language_model.parameters() if p.requires_grad
+    ]
+    optimizer = AdamW(
+        [
+            {"params": adapter_params, "lr": float(cfg["adapter_lr"])},
+            {"params": lora_params, "lr": float(cfg["lora_lr"])},
+        ],
+    )
+
+    grad_accum = int(cfg["gradient_accumulation_steps"])
+    steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
+    max_epochs = int(cfg["max_epochs"])
+    max_train_steps = steps_per_epoch * max_epochs
+    warmup_ratio = float(cfg["warmup_ratio"])
+    warmup_steps = int(max_train_steps * warmup_ratio)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=max_train_steps,
+    )
+
+    start_step = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location="cpu")
+        model.dino_adapter.load_state_dict(ckpt["adapter"])
+        if "lora" in ckpt:
+            set_peft_model_state_dict(
+                model.paligemma.language_model, ckpt["lora"]
+            )
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if "scheduler" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler"])
+        start_step = int(ckpt.get("step", 0))
+        logger.info("Resumed from step %s", start_step)
+
+    model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
+        model, optimizer, train_loader, val_loader, scheduler
+    )
+
+    log_interval = int(cfg["log_interval"])
+    save_interval = int(cfg["save_interval"])
+    val_interval = int(cfg["val_interval"])
+    sample_interval = int(cfg["sample_interval"])
+    max_grad_norm = float(cfg["max_grad_norm"])
+
+    global_step = start_step
+    sample_batch = None
+    for sb in val_loader:
+        if sb is not None:
+            sample_batch = sb
+            break
+    if sample_batch is None:
+        for sb in train_loader:
+            if sb is not None:
+                sample_batch = sb
+                break
+
+    clip_params: list = []
+    for group in optimizer.param_groups:
+        clip_params.extend(group["params"])
+
+    for epoch in range(max_epochs):
+        model.train()
+        epoch_loss = 0.0
+        n_batches = 0
+        for batch in train_loader:
+            if batch is None:
+                continue
+            batch = {
+                k: v
+                for k, v in batch.items()
+                if k
+                in (
+                    "pixel_values_siglip",
+                    "pixel_values_dino",
+                    "input_ids",
+                    "attention_mask",
+                    "labels",
+                )
+            }
+            with accelerator.accumulate(model):
+                outputs = model(**batch)
+                loss = outputs["loss"]
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(clip_params, max_grad_norm)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    global_step += 1
+
+                    li = loss.detach().float().item()
+                    epoch_loss += li
+                    n_batches += 1
+
+                    if global_step % log_interval == 0 and accelerator.is_main_process:
+                        logger.info(
+                            "epoch=%s step=%s loss=%.6f lr=%s",
+                            epoch,
+                            global_step,
+                            li,
+                            [f"{x:.2e}" for x in scheduler.get_last_lr()],
+                        )
+
+                    if (
+                        sample_interval > 0
+                        and global_step % sample_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        maybe_sample(model, tokenizer, sample_batch, accelerator)
+
+                    if (
+                        val_interval > 0
+                        and global_step % val_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        vloss = validation_loss(model, val_loader, accelerator)
+                        if vloss is not None:
+                            logger.info("validation loss: %.6f", vloss)
+
+                    if (
+                        save_interval > 0
+                        and global_step % save_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        um = accelerator.unwrap_model(model)
+                        ckpt_path = output_dir / f"checkpoint-{global_step}.pt"
+                        torch.save(
+                            {
+                                "step": global_step,
+                                "adapter": um.dino_adapter.state_dict(),
+                                "lora": get_peft_model_state_dict(
+                                    um.paligemma.language_model
+                                ),
+                                "optimizer": optimizer.state_dict(),
+                                "scheduler": scheduler.state_dict(),
+                            },
+                            ckpt_path,
+                        )
+                        logger.info("Saved %s", ckpt_path)
+
+        if accelerator.is_main_process and n_batches > 0:
+            logger.info(
+                "epoch %s done | mean train loss=%.6f",
+                epoch,
+                epoch_loss / n_batches,
+            )
+
+    if accelerator.is_main_process:
+        um = accelerator.unwrap_model(model)
+        final_path = output_dir / "checkpoint-final.pt"
+        torch.save(
+            {
+                "step": global_step,
+                "adapter": um.dino_adapter.state_dict(),
+                "lora": get_peft_model_state_dict(um.paligemma.language_model),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+            },
+            final_path,
+        )
+        logger.info("Saved %s", final_path)
+
+
+if __name__ == "__main__":
+    main()

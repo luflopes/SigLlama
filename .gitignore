@@ -36,6 +36,7 @@ faceforensics/
 # IDE
 .vscode/
 .idea/
+.cursor/
 
 # Environment
 .env
@@ -47,3 +48,6 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# MediaPipe cache
+.cache/

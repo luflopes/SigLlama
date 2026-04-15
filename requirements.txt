@@ -1,9 +1,21 @@
-torch
-torchvision
-transformers
-peft
+# ==============================================================
+# FaceGroundVLM dependencies
+# ==============================================================
+# PyTorch must be installed FIRST with the correct CUDA version.
+#
+# Driver 550.x (CUDA 12.4):
+#   pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+#
+# Driver 560+ (CUDA 12.6):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#
+# Then install the rest:
+#   pip install -r requirements.txt
+# ==============================================================
+
+transformers>=4.47.0
+peft>=0.10.0
 accelerate
-ultralytics
 mediapipe
 Pillow
 numpy
