@@ -1,4 +1,9 @@
-"""DD-VQA JSONL dataset for Stage 2+ fine-tuning (from scripts/prepare_ddvqa.py)."""
+"""DD-VQA JSONL dataset for Stage 2+ fine-tuning (from scripts/prepare_ddvqa.py).
+
+Uses the tokenizer and image_processor from PaliGemma separately to
+avoid injecting <image> placeholder tokens (visual features are
+handled externally via DINOv2 + I-MoF in FaceGroundVLM).
+"""
 from __future__ import annotations
 
 import json
@@ -25,7 +30,8 @@ class DDVQADataset(Dataset):
         max_length: int = 256,
     ):
         self.image_root = image_root
-        self.processor = processor
+        self.tokenizer = processor.tokenizer
+        self.image_processor = processor.image_processor
         self.dino_transform = dino_transform
         self.max_length = max_length
 
@@ -63,26 +69,31 @@ class DDVQADataset(Dataset):
 
         question = row.get("question", "")
         answer = row.get("answer", "")
+        full_text = f"{question}\n{answer}"
 
-        proc_out = self.processor(
-            images=img,
-            text=question,
-            suffix=answer,
+        pixel_values_siglip = self.image_processor(
+            images=img, return_tensors="pt"
+        )["pixel_values"].squeeze(0)
+
+        enc = self.tokenizer(
+            full_text,
             return_tensors="pt",
             padding="max_length",
             truncation=True,
             max_length=self.max_length,
         )
+        input_ids = enc["input_ids"].squeeze(0)
+        attention_mask = enc["attention_mask"].squeeze(0)
 
-        pixel_values_siglip = proc_out["pixel_values"].squeeze(0)
-        input_ids = proc_out["input_ids"].squeeze(0)
-        attention_mask = proc_out["attention_mask"].squeeze(0)
+        prefix_enc = self.tokenizer(
+            f"{question}\n",
+            add_special_tokens=True,
+        )
+        prefix_len = len(prefix_enc["input_ids"])
 
-        if "labels" in proc_out and proc_out["labels"] is not None:
-            labels = proc_out["labels"].squeeze(0)
-        else:
-            labels = input_ids.clone()
-            labels[attention_mask == 0] = -100
+        labels = input_ids.clone()
+        labels[:prefix_len] = -100
+        labels[attention_mask == 0] = -100
 
         pixel_values_dino = self.dino_transform(img)
 

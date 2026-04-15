@@ -1,4 +1,9 @@
-"""LCS-558K image-captioning dataset for Stage 1 adapter pre-training."""
+"""LCS-558K image-captioning dataset for Stage 1 adapter pre-training.
+
+Uses the tokenizer and image_processor from PaliGemma separately to
+avoid injecting <image> placeholder tokens (visual features are
+handled externally via DINOv2 + I-MoF in FaceGroundVLM).
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +14,6 @@ from typing import Any
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-from torch.utils.data._utils.collate import default_collate
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ class LCS558KDataset(Dataset):
         max_length: int = 128,
     ):
         self.image_root = image_root
-        self.processor = processor
+        self.tokenizer = processor.tokenizer
+        self.image_processor = processor.image_processor
         self.dino_transform = dino_transform
         self.max_length = max_length
 
@@ -73,26 +78,22 @@ class LCS558KDataset(Dataset):
 
         caption = sample["caption"]
 
-        proc_out = self.processor(
-            images=img,
-            text="",
-            suffix=caption,
+        pixel_values_siglip = self.image_processor(
+            images=img, return_tensors="pt"
+        )["pixel_values"].squeeze(0)
+
+        enc = self.tokenizer(
+            caption,
             return_tensors="pt",
             padding="max_length",
             truncation=True,
             max_length=self.max_length,
         )
+        input_ids = enc["input_ids"].squeeze(0)
+        attention_mask = enc["attention_mask"].squeeze(0)
 
-        pixel_values_siglip = proc_out["pixel_values"].squeeze(0)
-        input_ids = proc_out["input_ids"].squeeze(0)
-        attention_mask = proc_out["attention_mask"].squeeze(0)
-
-        if "labels" in proc_out and proc_out["labels"] is not None:
-            labels = proc_out["labels"].squeeze(0)
-        else:
-            labels = input_ids.clone()
-            labels[attention_mask == 0] = -100
-            labels[0] = -100
+        labels = input_ids.clone()
+        labels[attention_mask == 0] = -100
 
         pixel_values_dino = self.dino_transform(img)
 
