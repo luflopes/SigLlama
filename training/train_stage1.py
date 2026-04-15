@@ -23,6 +23,8 @@ from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
+from training.sample_utils import decode_ids, save_samples
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,12 +137,14 @@ def maybe_sample(
     tokenizer,
     batch,
     accelerator,
+    output_dir: Path,
+    global_step: int,
     max_new_tokens: int = 128,
 ) -> None:
     if batch is None:
         return
     model_unwrap = accelerator.unwrap_model(model)
-    batch = {
+    gen_batch = {
         k: v
         for k, v in batch.items()
         if k
@@ -148,11 +152,18 @@ def maybe_sample(
     }
     with torch.no_grad():
         gen_ids = model_unwrap.generate(
-            **batch,
+            **gen_batch,
             max_new_tokens=max_new_tokens,
         )
-    texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-    logger.info("sample generation: %s", texts[: min(2, len(texts))])
+    generated = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+    references = decode_ids(batch.get("labels", batch["input_ids"]), tokenizer)
+
+    logger.info("sample generation: %s", generated[: min(2, len(generated))])
+
+    save_samples(
+        batch["pixel_values_dino"], generated, references,
+        output_dir, global_step,
+    )
 
 
 def main() -> None:
@@ -317,7 +328,10 @@ def main() -> None:
                         and global_step % sample_interval == 0
                         and accelerator.is_main_process
                     ):
-                        maybe_sample(model, tokenizer, sample_batch, accelerator)
+                        maybe_sample(
+                            model, tokenizer, sample_batch, accelerator,
+                            output_dir, global_step,
+                        )
 
                     if (
                         val_loader is not None

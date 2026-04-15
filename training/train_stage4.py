@@ -37,6 +37,8 @@ from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
+from training.sample_utils import decode_ids, save_samples
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,6 +148,44 @@ class FaceGroundVLM_MoE(nn.Module):
             "router_loss": router_loss,
             "router_weights": router_weights,
         }
+
+
+def maybe_sample(
+    model,
+    tokenizer,
+    batch,
+    accelerator,
+    output_dir: Path,
+    global_step: int,
+    max_new_tokens: int = 128,
+) -> None:
+    if batch is None:
+        return
+    moe = accelerator.unwrap_model(model)
+    gen_batch = {
+        k: v
+        for k, v in batch.items()
+        if k in ("pixel_values_siglip", "pixel_values_dino", "input_ids", "attention_mask")
+    }
+    with torch.no_grad():
+        visual_embeds = moe.base_model._encode_vision(
+            gen_batch["pixel_values_siglip"], gen_batch["pixel_values_dino"],
+        )
+        router_weights = moe.router(visual_embeds)
+        blended_sd = moe._blend_lora(router_weights)
+        set_peft_model_state_dict(moe.base_model.language_model, blended_sd)
+
+        gen_ids = moe.base_model.generate(**gen_batch, max_new_tokens=max_new_tokens)
+
+    generated = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+    references = decode_ids(batch.get("labels", batch["input_ids"]), tokenizer)
+
+    logger.info("sample generation: %s", generated[: min(2, len(generated))])
+
+    save_samples(
+        batch["pixel_values_dino"], generated, references,
+        output_dir, global_step,
+    )
 
 
 def build_dataloaders(cfg, processor, dino_transform):
@@ -278,8 +318,19 @@ def main():
     router_loss_weight = float(cfg.get("router_loss_weight", 0.1))
     log_interval = int(cfg.get("log_interval", 50))
     save_interval = int(cfg.get("save_interval", 500))
+    sample_interval = int(cfg.get("sample_interval", 1000))
     max_grad_norm = float(cfg.get("max_grad_norm", 1.0))
     global_step = 0
+
+    sample_batch = None
+    for sb in val_loader:
+        if sb is not None:
+            sample_batch = {
+                k: v for k, v in sb.items()
+                if k in ("pixel_values_siglip", "pixel_values_dino",
+                         "input_ids", "attention_mask", "labels")
+            }
+            break
 
     for epoch in range(max_epochs):
         model.train()
@@ -328,6 +379,16 @@ def main():
                         logger.info(
                             "epoch=%d step=%d loss=%.4f router_loss=%.4f",
                             epoch, global_step, li, ri,
+                        )
+
+                    if (
+                        sample_interval > 0
+                        and global_step % sample_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        maybe_sample(
+                            model, tokenizer, sample_batch, accelerator,
+                            output_dir, global_step,
                         )
 
                     if save_interval > 0 and global_step % save_interval == 0 and accelerator.is_main_process:
