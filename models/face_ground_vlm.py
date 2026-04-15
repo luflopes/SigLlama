@@ -236,11 +236,17 @@ class FaceGroundVLM(nn.Module):
         visual_labels = torch.full((B, P), -100, dtype=labels.dtype, device=device)
         full_labels = torch.cat([visual_labels, labels], dim=1)
 
+        # token_type_ids: 0=visual (bidirectional attn), 1=text (causal attn)
+        visual_ttids = torch.zeros(B, P, dtype=torch.long, device=device)
+        text_ttids = torch.ones(B, input_ids.shape[1], dtype=torch.long, device=device)
+        full_ttids = torch.cat([visual_ttids, text_ttids], dim=1)
+
         outputs = self.paligemma(
             input_ids=None,
             inputs_embeds=inputs_embeds,
             attention_mask=full_attn,
             labels=full_labels,
+            token_type_ids=full_ttids,
         )
 
         return {"loss": outputs.loss, "logits": outputs.logits}
