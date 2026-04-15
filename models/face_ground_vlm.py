@@ -30,6 +30,7 @@ import logging
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import (
     Dinov2Model,
     PaliGemmaForConditionalGeneration,
@@ -135,6 +136,18 @@ class FaceGroundVLM(nn.Module):
         if use_lora:
             self._apply_lora(lora_rank, lora_alpha, lora_target_modules, lora_dropout)
 
+        # Text-only logits: apply lm_head only on text positions to
+        # avoid materializing [B, full_seq, vocab] (saves ~17× memory).
+        self._has_separate_lm_head = (
+            hasattr(self.paligemma, "model")
+            and hasattr(self.paligemma, "lm_head")
+        )
+        if self._has_separate_lm_head:
+            logger.info(
+                "Text-only logits optimization enabled "
+                "(lm_head computed only on text positions)"
+            )
+
     def _detect_lm_attr(self) -> str:
         """Return the attribute path to the language model for LoRA."""
         if hasattr(self.paligemma, "language_model"):
@@ -213,6 +226,57 @@ class FaceGroundVLM(nn.Module):
 
         return self.mof_fn(siglip_proj, dino_adapted)
 
+    def _forward_text_logits(
+        self,
+        inputs_embeds: torch.Tensor,
+        full_attn: torch.Tensor,
+        full_ttids: torch.Tensor,
+        num_visual: int,
+        labels: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Memory-optimized forward: lm_head only on text positions.
+
+        Instead of computing logits for the entire sequence
+        ``[B, 2048+T, vocab]`` and then casting to float32 for the loss
+        (which allocates ~17× more memory than needed), this method:
+
+        1. Runs the base PaliGemmaModel to get hidden states.
+        2. Selects only ``[last_visual_pos : end]`` hidden states.
+        3. Applies ``lm_head`` only on those positions.
+
+        The last visual position is included because its logit predicts
+        the first text token in the standard shifted causal-LM loss.
+        """
+        base_out = self.paligemma.model(
+            input_ids=None,
+            inputs_embeds=inputs_embeds,
+            attention_mask=full_attn,
+            token_type_ids=full_ttids,
+        )
+        hidden = (
+            base_out.last_hidden_state
+            if hasattr(base_out, "last_hidden_state")
+            else base_out[0]
+        )
+
+        text_hidden = hidden[:, num_visual - 1 :, :]  # [B, T+1, D]
+        del hidden, base_out
+
+        text_logits = self.paligemma.lm_head(text_hidden)  # [B, T+1, vocab]
+        del text_hidden
+
+        shift_logits = text_logits[:, :-1, :].contiguous()  # [B, T, vocab]
+        del text_logits
+        shift_labels = labels.contiguous()  # [B, T]
+
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)).float(),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+
+        return {"loss": loss}
+
     def forward(
         self,
         pixel_values_siglip: torch.Tensor,
@@ -233,13 +297,19 @@ class FaceGroundVLM(nn.Module):
         visual_attn = torch.ones(B, P, dtype=attention_mask.dtype, device=device)
         full_attn = torch.cat([visual_attn, attention_mask], dim=1)
 
-        visual_labels = torch.full((B, P), -100, dtype=labels.dtype, device=device)
-        full_labels = torch.cat([visual_labels, labels], dim=1)
-
         # token_type_ids: 0=visual (bidirectional attn), 1=text (causal attn)
         visual_ttids = torch.zeros(B, P, dtype=torch.long, device=device)
         text_ttids = torch.ones(B, input_ids.shape[1], dtype=torch.long, device=device)
         full_ttids = torch.cat([visual_ttids, text_ttids], dim=1)
+
+        if self._has_separate_lm_head:
+            return self._forward_text_logits(
+                inputs_embeds, full_attn, full_ttids, P, labels,
+            )
+
+        # Fallback: full forward (transformers v4.x or non-standard layout)
+        visual_labels = torch.full((B, P), -100, dtype=labels.dtype, device=device)
+        full_labels = torch.cat([visual_labels, labels], dim=1)
 
         outputs = self.paligemma(
             input_ids=None,
@@ -249,7 +319,7 @@ class FaceGroundVLM(nn.Module):
             token_type_ids=full_ttids,
         )
 
-        return {"loss": outputs.loss, "logits": outputs.logits}
+        return {"loss": outputs.loss}
 
     @torch.no_grad()
     def generate(

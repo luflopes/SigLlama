@@ -34,6 +34,7 @@ from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision.transforms import Compose, Normalize, Resize, ToTensor
+from tqdm import tqdm
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,6 @@ class FaceGroundVLM_MoE(nn.Module):
         return {
             "loss": out["loss"],
             "router_loss": router_loss,
-            "logits": out["logits"],
             "router_weights": router_weights,
         }
 
@@ -164,6 +164,12 @@ def build_dataloaders(cfg, processor, dino_transform):
         max_length=cfg.get("max_text_length", 384),
     )
 
+    nw = cfg["num_workers"]
+    dl_common = dict(
+        num_workers=nw, collate_fn=collate_ddvqa, pin_memory=True,
+        persistent_workers=nw > 0, prefetch_factor=2 if nw > 0 else None,
+    )
+
     if cfg.get("balanced_sampling", False):
         n_real = sum(1 for s in train_ds.samples if s.get("label", "").lower() == "real")
         n_fake = len(train_ds.samples) - n_real
@@ -172,18 +178,15 @@ def build_dataloaders(cfg, processor, dino_transform):
         weights = [wr if s.get("label", "").lower() == "real" else wf for s in train_ds.samples]
         sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
         train_loader = DataLoader(
-            train_ds, batch_size=cfg["batch_size"], sampler=sampler,
-            num_workers=cfg["num_workers"], collate_fn=collate_ddvqa, pin_memory=True,
+            train_ds, batch_size=cfg["batch_size"], sampler=sampler, **dl_common,
         )
     else:
         train_loader = DataLoader(
-            train_ds, batch_size=cfg["batch_size"], shuffle=True,
-            num_workers=cfg["num_workers"], collate_fn=collate_ddvqa, pin_memory=True,
+            train_ds, batch_size=cfg["batch_size"], shuffle=True, **dl_common,
         )
 
     val_loader = DataLoader(
-        val_ds, batch_size=cfg["batch_size"], shuffle=False,
-        num_workers=cfg["num_workers"], collate_fn=collate_ddvqa, pin_memory=True,
+        val_ds, batch_size=cfg["batch_size"], shuffle=False, **dl_common,
     )
     return train_loader, val_loader
 
@@ -282,8 +285,13 @@ def main():
         model.train()
         epoch_loss = 0.0
         n_batches = 0
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{max_epochs}",
+            disable=not accelerator.is_main_process,
+        )
 
-        for batch in train_loader:
+        for batch in pbar:
             if batch is None:
                 continue
 
@@ -309,6 +317,12 @@ def main():
                     ri = out["router_loss"].detach().float().item()
                     epoch_loss += li
                     n_batches += 1
+
+                    pbar.set_postfix(
+                        loss=f"{li:.4f}",
+                        rloss=f"{ri:.4f}",
+                        step=global_step,
+                    )
 
                     if global_step % log_interval == 0 and accelerator.is_main_process:
                         logger.info(

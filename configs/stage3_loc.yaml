@@ -34,7 +34,7 @@ lora_dropout: 0.05
 max_epochs: 5
 batch_size: 16
 gradient_accumulation_steps: 4
-num_workers: 4
+num_workers: 8
 balanced_sampling: true
 
 adapter_lr: 5.0e-5

@@ -20,6 +20,7 @@ from models.face_ground_vlm import FaceGroundVLM
 from torch.optim import SGD
 from torch.utils.data import DataLoader, random_split
 from torchvision.transforms import Compose, Normalize, Resize, ToTensor
+from tqdm import tqdm
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
 logger = logging.getLogger(__name__)
@@ -66,13 +67,16 @@ def build_dataloaders(cfg: dict, processor, dino_transform):
                 full, [n - val_size, val_size], generator=g
             )
 
+    nw = cfg["num_workers"]
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["batch_size"],
         shuffle=True,
-        num_workers=cfg["num_workers"],
+        num_workers=nw,
         collate_fn=collate_skip_none,
         pin_memory=True,
+        persistent_workers=nw > 0,
+        prefetch_factor=2 if nw > 0 else None,
     )
     val_loader = None
     if val_ds is not None:
@@ -80,9 +84,11 @@ def build_dataloaders(cfg: dict, processor, dino_transform):
             val_ds,
             batch_size=cfg["batch_size"],
             shuffle=False,
-            num_workers=cfg["num_workers"],
+            num_workers=nw,
             collate_fn=collate_skip_none,
             pin_memory=True,
+            persistent_workers=nw > 0,
+            prefetch_factor=2 if nw > 0 else None,
         )
     return train_loader, val_loader
 
@@ -93,8 +99,14 @@ def validation_loss(model, val_loader, accelerator) -> float | None:
     model.eval()
     total = 0.0
     count = 0
+    pbar = tqdm(
+        val_loader,
+        desc="Validating",
+        leave=False,
+        disable=not accelerator.is_main_process,
+    )
     with torch.no_grad():
-        for batch in val_loader:
+        for batch in pbar:
             if batch is None:
                 continue
             batch = {
@@ -106,6 +118,8 @@ def validation_loss(model, val_loader, accelerator) -> float | None:
             loss = outputs["loss"]
             total += loss.detach().float().item()
             count += 1
+            if count > 0:
+                pbar.set_postfix(avg_loss=f"{total / count:.4f}")
     model.train()
     if count == 0:
         return None
@@ -245,7 +259,12 @@ def main() -> None:
         model.train()
         epoch_loss = 0.0
         n_batches = 0
-        for batch in train_loader:
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{max_epochs}",
+            disable=not accelerator.is_main_process,
+        )
+        for batch in pbar:
             if batch is None:
                 continue
             batch = {
@@ -277,6 +296,12 @@ def main() -> None:
                     li = loss.detach().float().item()
                     epoch_loss += li
                     n_batches += 1
+
+                    pbar.set_postfix(
+                        loss=f"{li:.4f}",
+                        lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                        step=global_step,
+                    )
 
                     if global_step % log_interval == 0 and accelerator.is_main_process:
                         logger.info(
