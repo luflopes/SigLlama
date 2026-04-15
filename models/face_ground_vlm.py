@@ -106,6 +106,7 @@ class FaceGroundVLM(nn.Module):
         self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
             paligemma_model,
             torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
         )
         self.paligemma.requires_grad_(False)
 
@@ -124,6 +125,7 @@ class FaceGroundVLM(nn.Module):
         self.dinov2 = Dinov2Model.from_pretrained(
             dinov2_model,
             torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
         )
         self.dinov2.requires_grad_(False)
 
