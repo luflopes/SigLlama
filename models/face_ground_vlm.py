@@ -29,9 +29,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from transformers import (
-    AutoModelForVision2Seq,
-    AutoProcessor,
     Dinov2Model,
+    PaliGemmaForConditionalGeneration,
 )
 
 from .dino_adapter import DINOv2Adapter
@@ -75,7 +74,7 @@ class FaceGroundVLM(nn.Module):
         self.mof_fn = MOF_STRATEGIES[mof_strategy]
 
         # --- PaliGemma2 (SigLIP + Projector + Gemma2) ---
-        self.paligemma = AutoModelForVision2Seq.from_pretrained(
+        self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
             paligemma_model,
             torch_dtype=torch.bfloat16,
         )
