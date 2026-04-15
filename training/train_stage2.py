@@ -163,7 +163,7 @@ def load_adapter_checkpoint(model: FaceGroundVLM, path: str) -> None:
 def load_lora_checkpoint(model: FaceGroundVLM, path: str) -> None:
     ckpt = torch.load(path, map_location="cpu")
     lora_sd = ckpt.get("lora", ckpt)
-    set_peft_model_state_dict(model.paligemma.language_model, lora_sd)
+    set_peft_model_state_dict(model.language_model, lora_sd)
 
 
 def main() -> None:
@@ -207,10 +207,10 @@ def main() -> None:
         lora_target_modules=cfg.get("lora_target_modules"),
         lora_dropout=float(cfg.get("lora_dropout", 0.05)),
     )
-    model.paligemma.language_model.enable_input_require_grads()
+    model.enable_input_require_grads()
 
     if cfg.get("gradient_checkpointing", True):
-        model.paligemma.language_model.gradient_checkpointing_enable()
+        model.enable_gradient_checkpointing()
 
     load_adapter_checkpoint(model, cfg["adapter_checkpoint"])
     if cfg.get("lora_checkpoint"):
@@ -220,7 +220,7 @@ def main() -> None:
 
     adapter_params = list(model.dino_adapter.parameters())
     lora_params = [
-        p for p in model.paligemma.language_model.parameters() if p.requires_grad
+        p for p in model.language_model.parameters() if p.requires_grad
     ]
     optimizer = AdamW(
         [
@@ -247,7 +247,7 @@ def main() -> None:
         model.dino_adapter.load_state_dict(ckpt["adapter"])
         if "lora" in ckpt:
             set_peft_model_state_dict(
-                model.paligemma.language_model, ckpt["lora"]
+                model.language_model, ckpt["lora"]
             )
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
@@ -353,7 +353,7 @@ def main() -> None:
                                 "step": global_step,
                                 "adapter": um.dino_adapter.state_dict(),
                                 "lora": get_peft_model_state_dict(
-                                    um.paligemma.language_model
+                                    um.language_model
                                 ),
                                 "optimizer": optimizer.state_dict(),
                                 "scheduler": scheduler.state_dict(),
@@ -376,7 +376,7 @@ def main() -> None:
             {
                 "step": global_step,
                 "adapter": um.dino_adapter.state_dict(),
-                "lora": get_peft_model_state_dict(um.paligemma.language_model),
+                "lora": get_peft_model_state_dict(um.language_model),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
             },

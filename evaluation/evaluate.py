@@ -69,7 +69,7 @@ def load_model(cfg: dict, checkpoint_path: str, device: torch.device) -> FaceGro
     model.dino_adapter.load_state_dict(ckpt["adapter"])
     if "lora" in ckpt:
         from peft import set_peft_model_state_dict
-        set_peft_model_state_dict(model.paligemma.language_model, ckpt["lora"])
+        set_peft_model_state_dict(model.language_model, ckpt["lora"])
     logger.info("Loaded checkpoint from %s (step %s)", checkpoint_path, ckpt.get("step", "?"))
 
     model.to(device)

@@ -26,6 +26,8 @@ Novel contributions over TruthLens:
 """
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn as nn
 from transformers import (
@@ -35,6 +37,32 @@ from transformers import (
 
 from .dino_adapter import DINOv2Adapter
 from .mixture_of_features import MOF_STRATEGIES
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_paligemma_components(paligemma):
+    """Return (vision_tower, mm_projector, lm_backbone, embed_tokens)
+    handling both transformers v4.x and v5.x model layouts."""
+    if hasattr(paligemma, "vision_tower"):
+        vt = paligemma.vision_tower
+        proj = paligemma.multi_modal_projector
+        lm = paligemma.language_model
+        if hasattr(lm, "model") and hasattr(lm.model, "embed_tokens"):
+            et = lm.model.embed_tokens
+        else:
+            et = lm.embed_tokens
+    elif hasattr(paligemma, "model"):
+        vt = paligemma.model.vision_tower
+        proj = paligemma.model.multi_modal_projector
+        lm = paligemma.model.language_model
+        et = lm.embed_tokens
+    else:
+        raise AttributeError(
+            "Cannot resolve PaliGemma components. "
+            f"Top-level attrs: {list(paligemma._modules.keys())}"
+        )
+    return vt, proj, lm, et
 
 
 class FaceGroundVLM(nn.Module):
@@ -80,6 +108,17 @@ class FaceGroundVLM(nn.Module):
         )
         self.paligemma.requires_grad_(False)
 
+        # --- Resolve internal component references (v4/v5 compat) ---
+        vt, proj, lm, _ = _resolve_paligemma_components(self.paligemma)
+        self._vision_tower = vt
+        self._mm_projector = proj
+        self._lm_ref_attr = self._detect_lm_attr()
+
+        logger.info(
+            "PaliGemma components resolved: vision_tower=%s, lm=%s",
+            type(vt).__name__, type(lm).__name__,
+        )
+
         # --- DINOv2 (frozen) ---
         self.dinov2 = Dinov2Model.from_pretrained(
             dinov2_model,
@@ -96,6 +135,25 @@ class FaceGroundVLM(nn.Module):
         if use_lora:
             self._apply_lora(lora_rank, lora_alpha, lora_target_modules, lora_dropout)
 
+    def _detect_lm_attr(self) -> str:
+        """Return the attribute path to the language model for LoRA."""
+        if hasattr(self.paligemma, "language_model"):
+            return "language_model"
+        return "model.language_model"
+
+    def _get_lm(self):
+        """Return the language model sub-module (potentially LoRA-wrapped)."""
+        if self._lm_ref_attr == "language_model":
+            return self.paligemma.language_model
+        return self.paligemma.model.language_model
+
+    def _set_lm(self, new_lm):
+        """Replace the language model sub-module (for LoRA wrapping)."""
+        if self._lm_ref_attr == "language_model":
+            self.paligemma.language_model = new_lm
+        else:
+            self.paligemma.model.language_model = new_lm
+
     def _apply_lora(self, rank, alpha, target_modules, dropout):
         from peft import LoraConfig, get_peft_model
 
@@ -109,19 +167,30 @@ class FaceGroundVLM(nn.Module):
             bias="none",
             task_type="CAUSAL_LM",
         )
-        self.paligemma.language_model = get_peft_model(
-            self.paligemma.language_model, config
-        )
+        lm = self._get_lm()
+        self._set_lm(get_peft_model(lm, config))
 
     @property
     def language_model(self):
-        return self.paligemma.language_model
+        return self._get_lm()
 
     def _get_embed_tokens(self) -> nn.Embedding:
-        lm = self.paligemma.language_model
+        lm = self._get_lm()
         if self.use_lora:
-            return lm.get_base_model().model.embed_tokens
-        return lm.model.embed_tokens
+            base = lm.get_base_model()
+        else:
+            base = lm
+        if hasattr(base, "model") and hasattr(base.model, "embed_tokens"):
+            return base.model.embed_tokens
+        if hasattr(base, "embed_tokens"):
+            return base.embed_tokens
+        raise AttributeError(f"Cannot find embed_tokens on {type(base).__name__}")
+
+    def enable_gradient_checkpointing(self):
+        self._get_lm().gradient_checkpointing_enable()
+
+    def enable_input_require_grads(self):
+        self._get_lm().enable_input_require_grads()
 
     def _encode_vision(
         self,
@@ -130,10 +199,10 @@ class FaceGroundVLM(nn.Module):
     ) -> torch.Tensor:
         """Encode image through both vision towers and mix features."""
         with torch.no_grad():
-            siglip_out = self.paligemma.vision_tower(
+            siglip_out = self._vision_tower(
                 pixel_values=pixel_values_siglip
             ).last_hidden_state
-            siglip_proj = self.paligemma.multi_modal_projector(siglip_out)
+            siglip_proj = self._mm_projector(siglip_out)
 
             dino_out = self.dinov2(
                 pixel_values=pixel_values_dino
@@ -167,7 +236,8 @@ class FaceGroundVLM(nn.Module):
         visual_labels = torch.full((B, P), -100, dtype=labels.dtype, device=device)
         full_labels = torch.cat([visual_labels, labels], dim=1)
 
-        outputs = self.paligemma.language_model(
+        outputs = self.paligemma(
+            input_ids=None,
             inputs_embeds=inputs_embeds,
             attention_mask=full_attn,
             labels=full_labels,
@@ -200,7 +270,8 @@ class FaceGroundVLM(nn.Module):
         visual_attn = torch.ones(B, P, dtype=attention_mask.dtype, device=device)
         full_attn = torch.cat([visual_attn, attention_mask], dim=1)
 
-        output_ids = self.paligemma.language_model.generate(
+        output_ids = self.paligemma.generate(
+            input_ids=None,
             inputs_embeds=inputs_embeds,
             attention_mask=full_attn,
             max_new_tokens=max_new_tokens,
@@ -217,7 +288,7 @@ class FaceGroundVLM(nn.Module):
         if self.use_lora:
             lora_p = sum(
                 p.numel()
-                for p in self.paligemma.language_model.parameters()
+                for p in self._get_lm().parameters()
                 if p.requires_grad
             )
         total = sum(p.numel() for p in self.parameters())

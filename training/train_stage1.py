@@ -179,7 +179,7 @@ def main() -> None:
         use_lora=False,
     )
     if cfg.get("gradient_checkpointing", True):
-        model.paligemma.language_model.gradient_checkpointing_enable()
+        model.enable_gradient_checkpointing()
 
     train_loader, val_loader = build_dataloaders(cfg, processor, dino_transform)
 

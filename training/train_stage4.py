@@ -117,7 +117,7 @@ class FaceGroundVLM_MoE(nn.Module):
 
         blended_sd = self._blend_lora(router_weights)
         set_peft_model_state_dict(
-            self.base_model.paligemma.language_model, blended_sd
+            self.base_model.language_model, blended_sd
         )
 
         out = self.base_model(
@@ -226,16 +226,16 @@ def main():
         lora_target_modules=cfg.get("lora_target_modules"),
         lora_dropout=cfg.get("lora_dropout", 0.05),
     )
-    base_model.paligemma.language_model.enable_input_require_grads()
+    base_model.enable_input_require_grads()
 
     ckpt = torch.load(cfg["adapter_checkpoint"], map_location="cpu")
     base_model.dino_adapter.load_state_dict(ckpt["adapter"])
     if "lora" in ckpt:
-        set_peft_model_state_dict(base_model.paligemma.language_model, ckpt["lora"])
-    base_lora_sd = get_peft_model_state_dict(base_model.paligemma.language_model)
+        set_peft_model_state_dict(base_model.language_model, ckpt["lora"])
+    base_lora_sd = get_peft_model_state_dict(base_model.language_model)
 
     if cfg.get("gradient_checkpointing", True):
-        base_model.paligemma.language_model.gradient_checkpointing_enable()
+        base_model.enable_gradient_checkpointing()
 
     model = FaceGroundVLM_MoE(
         base_model=base_model,
