@@ -23,8 +23,8 @@ val_size: 1000
 
 # --- Training ---
 max_epochs: 5
-batch_size: 16
-gradient_accumulation_steps: 4    # effective batch = 64
+batch_size: 2
+gradient_accumulation_steps: 32   # effective batch = 64
 num_workers: 4
 
 learning_rate: 1.0e-4             # SGD lr (TruthLens)
