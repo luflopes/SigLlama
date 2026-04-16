@@ -15,7 +15,7 @@ import torch
 import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from data.ddvqa_dataset import DDVQADataset, collate_ddvqa
+from data.ddvqa_dataset import DDVQADataset, _sample_is_real, collate_ddvqa
 from models import build_model
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from torch.optim import AdamW
@@ -51,12 +51,12 @@ def build_train_sampler(
 ) -> WeightedRandomSampler | None:
     if not cfg.get("balanced_sampling", False):
         return None
-    n_real = sum(1 for s in train_ds.samples if s.get("label", "").lower() == "real")
+    n_real = sum(1 for s in train_ds.samples if _sample_is_real(s))
     n_fake = len(train_ds.samples) - n_real
     wr = 1.0 / max(n_real, 1)
     wf = 1.0 / max(n_fake, 1)
     weights = [
-        wr if s.get("label", "").lower() == "real" else wf for s in train_ds.samples
+        wr if _sample_is_real(s) else wf for s in train_ds.samples
     ]
     return WeightedRandomSampler(
         weights,

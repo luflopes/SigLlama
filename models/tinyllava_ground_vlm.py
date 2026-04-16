@@ -176,9 +176,9 @@ class TinyLLaVAGroundVLM(nn.Module):
     def _load_tinyllava_checkpoint(self, path: str) -> None:
         ckpt = _load_tinyllava_weights(path)
 
-        # SigLIP: strict=False because the TinyLLaVA share recipe only
-        # updates layers >=12 -- older layers in the base repo are also
-        # fine but the checkpoint may miss some keys (head, etc.).
+        # SigLIP: strict=False because the TinyLLaVA checkpoint drops
+        # components that are unused with select_layer=-2 + select_feature=patch
+        # (typically the MAP pooling head + post_layernorm + last encoder layer).
         missing_s, unexpected_s = self.siglip.load_state_dict(
             ckpt["siglip"], strict=False,
         )
@@ -186,6 +186,19 @@ class TinyLLaVAGroundVLM(nn.Module):
             "SigLIP loaded from TinyLLaVA (missing=%d, unexpected=%d)",
             len(missing_s), len(unexpected_s),
         )
+        if missing_s:
+            # Group missing keys by top-level module to diagnose quickly.
+            buckets: dict[str, int] = {}
+            for k in missing_s:
+                # e.g. "vision_model.encoder.layers.26.layer_norm1.weight"
+                # -> bucket "vision_model.encoder.layers.26"
+                parts = k.split(".")
+                bucket = ".".join(parts[:4]) if len(parts) >= 4 else k
+                buckets[bucket] = buckets.get(bucket, 0) + 1
+            logger.info(
+                "  SigLIP missing-key buckets: %s",
+                sorted(buckets.items(), key=lambda x: -x[1]),
+            )
 
         missing_c, unexpected_c = self.connector.load_state_dict(
             ckpt["connector"], strict=True,

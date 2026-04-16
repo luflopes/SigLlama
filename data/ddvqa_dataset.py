@@ -19,8 +19,23 @@ from .prompt_formats import format_vqa_prompt
 logger = logging.getLogger(__name__)
 
 
+def _sample_is_real(row: dict) -> bool:
+    """Robustly read the real/fake flag from a DD-VQA row.
+
+    The prepare script writes ``is_real`` (boolean). Older/manual metadata
+    files may use a string ``label`` field with values like "real"/"fake".
+    """
+    if "is_real" in row:
+        return bool(row["is_real"])
+    return str(row.get("label", "")).lower() == "real"
+
+
+def _sample_label_str(row: dict) -> str:
+    return "real" if _sample_is_real(row) else "fake"
+
+
 class DDVQADataset(Dataset):
-    """JSONL with ``image``, ``question``, ``answer``, ``label``, ``method``."""
+    """JSONL with ``image``, ``question``, ``answer``, ``is_real``/``label``, ``method``."""
 
     def __init__(
         self,
@@ -46,7 +61,7 @@ class DDVQADataset(Dataset):
                 if line:
                     self.samples.append(json.loads(line))
 
-        n_real = sum(1 for s in self.samples if s.get("label", "").lower() == "real")
+        n_real = sum(1 for s in self.samples if _sample_is_real(s))
         n_fake = len(self.samples) - n_real
         logger.info(
             "Loaded %d samples from %s (real=%d, fake=%d, backbone=%s)",
@@ -57,7 +72,7 @@ class DDVQADataset(Dataset):
         return len(self.samples)
 
     def is_real(self, idx: int) -> bool:
-        return self.samples[idx].get("label", "").lower() == "real"
+        return _sample_is_real(self.samples[idx])
 
     def __getitem__(self, idx: int) -> dict[str, Any] | None:
         row = self.samples[idx]
@@ -98,7 +113,7 @@ class DDVQADataset(Dataset):
 
         pixel_values_dino = self.dino_transform(img)
 
-        label_str = row.get("label", "fake").lower()
+        label_str = _sample_label_str(row)
         method = row.get("method", "unknown")
 
         return {
