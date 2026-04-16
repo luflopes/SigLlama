@@ -196,19 +196,36 @@ def compute_detection_f1(
 # Localization metrics (Phase 4+)
 # ------------------------------------------------------------------
 
-def parse_loc_tokens(text: str) -> list[tuple[int, int, int, int]]:
-    """Extract bounding boxes from <locYYYY><locXXXX>... sequences.
+_BBOX_TEXT_RE = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]")
+_BBOX_LOC_RE = re.compile(r"<loc(\d{4})><loc(\d{4})><loc(\d{4})><loc(\d{4})>")
 
-    PaliGemma2 format: <loc_y1><loc_x1><loc_y2><loc_x2>.
-    Returns list of (y1, x1, y2, x2) tuples in [0, 1023] range.
+
+def parse_bbox_text(text: str) -> list[tuple[int, int, int, int]]:
+    """Extract bounding boxes from textual ``[y1,x1,y2,x2]`` sequences.
+
+    The integer coordinates are in ``[0, 1000]`` (see
+    ``scripts/create_loc_annotations.py``). Returns ``(y1, x1, y2, x2)`` tuples.
     """
-    import re
-    pattern = re.compile(
-        r"<loc(\d{4})><loc(\d{4})><loc(\d{4})><loc(\d{4})>"
-    )
     return [
         (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
-        for m in pattern.finditer(text)
+        for m in _BBOX_TEXT_RE.finditer(text)
+    ]
+
+
+def parse_loc_tokens(text: str) -> list[tuple[int, int, int, int]]:
+    """Extract bounding boxes from either textual ``[y1,x1,y2,x2]`` (preferred)
+    or legacy ``<locYYYY>`` PaliGemma2 sequences.
+
+    Both formats return ``(y1, x1, y2, x2)`` tuples. Coordinate scales
+    (1000 vs 1023) are close enough that a shared IoU threshold remains
+    meaningful across formats.
+    """
+    boxes = parse_bbox_text(text)
+    if boxes:
+        return boxes
+    return [
+        (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        for m in _BBOX_LOC_RE.finditer(text)
     ]
 
 

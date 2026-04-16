@@ -3,7 +3,11 @@
 # =============================================================
 # Train only the DINOv2 adapter MLP.  PaliGemma2 (SigLIP +
 # projector + Gemma2) and DINOv2 are frozen.
-# Following TruthLens: SGD lr=1e-4, cosine annealing, 5 epochs.
+# Following TruthLens/LLaVA: SGD lr=1e-4, cosine annealing.
+#
+# LLaVA uses 1 epoch on 558K for adapter pre-training.
+# We use 1 epoch on 200K (sufficient for a 2.4M-param linear
+# projection; Stage 2 continues adapter training with task data).
 #
 # Usage:
 #   python training/train_stage1.py --config configs/stage1_adapter.yaml
@@ -11,18 +15,21 @@
 seed: 42
 
 # --- Models ---
+backbone: "paligemma"
 paligemma_model: "google/paligemma2-3b-pt-448"
 dinov2_model: "facebook/dinov2-large"
 mof_strategy: "interleave"
+use_dino: true
 
 # --- Data ---
 metadata_path: "/datasets/deepfake/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
 image_root: "/datasets/deepfake/lcs-558k"
 max_text_length: 128
+max_train_samples: 200000         # sub-sample from 558K (null = use all)
 val_size: 1000
 
 # --- Training ---
-max_epochs: 2
+max_epochs: 1
 batch_size: 16
 gradient_accumulation_steps: 4    # effective batch = 64
 num_workers: 8
@@ -36,7 +43,7 @@ gradient_checkpointing: true
 
 # --- Logging & checkpointing ---
 log_interval: 100
-save_interval: 2000
-val_interval: 2000
-sample_interval: 5000
+save_interval: 1000
+val_interval: 1000
+sample_interval: 2000
 output_dir: "outputs/stage1_adapter"

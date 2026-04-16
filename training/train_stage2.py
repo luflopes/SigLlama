@@ -16,14 +16,14 @@ import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from data.ddvqa_dataset import DDVQADataset, collate_ddvqa
-from models.face_ground_vlm import FaceGroundVLM
+from models import build_model
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
-from transformers import AutoProcessor, get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup
 
+from training.factory import build_processor_and_transforms
 from training.sample_utils import decode_ids, save_samples
 
 logger = logging.getLogger(__name__)
@@ -65,20 +65,26 @@ def build_train_sampler(
     )
 
 
-def build_dataloaders(cfg: dict, processor, dino_transform):
+def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
+    backbone = cfg.get("backbone", "paligemma")
+    max_len = cfg.get("max_text_length", 256)
     train_ds = DDVQADataset(
         metadata_path=cfg["train_metadata"],
         image_root=cfg["image_root"],
-        max_text_length=cfg["max_text_length"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
+        backbone=backbone,
+        max_length=max_len,
     )
     val_ds = DDVQADataset(
         metadata_path=cfg["val_metadata"],
         image_root=cfg["image_root"],
-        max_text_length=cfg["max_text_length"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
+        backbone=backbone,
+        max_length=max_len,
     )
     sampler = build_train_sampler(train_ds, cfg)
     nw = cfg["num_workers"]
@@ -179,13 +185,16 @@ def maybe_sample(
     )
 
 
-def load_adapter_checkpoint(model: FaceGroundVLM, path: str) -> None:
+def load_adapter_checkpoint(model, path: str) -> None:
+    if model.dino_adapter is None:
+        logger.info("use_dino=False: skipping adapter checkpoint load")
+        return
     ckpt = torch.load(path, map_location="cpu")
     state = ckpt["adapter"] if isinstance(ckpt, dict) and "adapter" in ckpt else ckpt
     model.dino_adapter.load_state_dict(state)
 
 
-def load_lora_checkpoint(model: FaceGroundVLM, path: str) -> None:
+def load_lora_checkpoint(model, path: str) -> None:
     ckpt = torch.load(path, map_location="cpu")
     lora_sd = ckpt.get("lora", ckpt)
     set_peft_model_state_dict(model.language_model, lora_sd)
@@ -211,48 +220,37 @@ def main() -> None:
         mixed_precision=cfg.get("mixed_precision", "no"),
     )
 
-    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
-    tokenizer = processor.tokenizer
+    proc = build_processor_and_transforms(cfg)
+    tokenizer = proc["tokenizer"]
+    image_processor = proc["image_processor"]
+    dino_transform = proc["dino_transform"]
 
-    dino_transform = Compose(
-        [
-            Resize((448, 448)),
-            ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-    model = FaceGroundVLM(
-        paligemma_model=cfg["paligemma_model"],
-        dinov2_model=cfg["dinov2_model"],
-        mof_strategy=cfg["mof_strategy"],
-        use_lora=True,
-        lora_rank=int(cfg["lora_rank"]),
-        lora_alpha=int(cfg["lora_alpha"]),
-        lora_target_modules=cfg.get("lora_target_modules"),
-        lora_dropout=float(cfg.get("lora_dropout", 0.05)),
-    )
+    model = build_model(cfg, use_lora=True)
     model.enable_input_require_grads()
 
     if cfg.get("gradient_checkpointing", True):
         model.enable_gradient_checkpointing()
 
-    load_adapter_checkpoint(model, cfg["adapter_checkpoint"])
+    if cfg.get("adapter_checkpoint"):
+        load_adapter_checkpoint(model, cfg["adapter_checkpoint"])
     if cfg.get("lora_checkpoint"):
         load_lora_checkpoint(model, cfg["lora_checkpoint"])
 
-    train_loader, val_loader = build_dataloaders(cfg, processor, dino_transform)
+    train_loader, val_loader = build_dataloaders(
+        cfg, tokenizer, image_processor, dino_transform,
+    )
 
-    adapter_params = list(model.dino_adapter.parameters())
+    adapter_params = (
+        list(model.dino_adapter.parameters()) if model.dino_adapter is not None else []
+    )
     lora_params = [
         p for p in model.language_model.parameters() if p.requires_grad
     ]
-    optimizer = AdamW(
-        [
-            {"params": adapter_params, "lr": float(cfg["adapter_lr"])},
-            {"params": lora_params, "lr": float(cfg["lora_lr"])},
-        ],
-    )
+    opt_groups: list[dict] = []
+    if adapter_params:
+        opt_groups.append({"params": adapter_params, "lr": float(cfg["adapter_lr"])})
+    opt_groups.append({"params": lora_params, "lr": float(cfg["lora_lr"])})
+    optimizer = AdamW(opt_groups)
 
     grad_accum = int(cfg["gradient_accumulation_steps"])
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
@@ -269,7 +267,8 @@ def main() -> None:
     start_step = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu")
-        model.dino_adapter.load_state_dict(ckpt["adapter"])
+        if model.dino_adapter is not None and "adapter" in ckpt:
+            model.dino_adapter.load_state_dict(ckpt["adapter"])
         if "lora" in ckpt:
             set_peft_model_state_dict(
                 model.language_model, ckpt["lora"]
@@ -389,18 +388,15 @@ def main() -> None:
                     ):
                         um = accelerator.unwrap_model(model)
                         ckpt_path = output_dir / f"checkpoint-{global_step}.pt"
-                        torch.save(
-                            {
-                                "step": global_step,
-                                "adapter": um.dino_adapter.state_dict(),
-                                "lora": get_peft_model_state_dict(
-                                    um.language_model
-                                ),
-                                "optimizer": optimizer.state_dict(),
-                                "scheduler": scheduler.state_dict(),
-                            },
-                            ckpt_path,
-                        )
+                        state = {
+                            "step": global_step,
+                            "lora": get_peft_model_state_dict(um.language_model),
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(),
+                        }
+                        if um.dino_adapter is not None:
+                            state["adapter"] = um.dino_adapter.state_dict()
+                        torch.save(state, ckpt_path)
                         logger.info("Saved %s", ckpt_path)
 
         if accelerator.is_main_process and n_batches > 0:
@@ -413,16 +409,15 @@ def main() -> None:
     if accelerator.is_main_process:
         um = accelerator.unwrap_model(model)
         final_path = output_dir / "checkpoint-final.pt"
-        torch.save(
-            {
-                "step": global_step,
-                "adapter": um.dino_adapter.state_dict(),
-                "lora": get_peft_model_state_dict(um.language_model),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-            },
-            final_path,
-        )
+        state = {
+            "step": global_step,
+            "lora": get_peft_model_state_dict(um.language_model),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+        }
+        if um.dino_adapter is not None:
+            state["adapter"] = um.dino_adapter.state_dict()
+        torch.save(state, final_path)
         logger.info("Saved %s", final_path)
 
 

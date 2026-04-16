@@ -92,6 +92,7 @@ class FaceGroundVLM(nn.Module):
         paligemma_model: str = "google/paligemma2-3b-pt-448",
         dinov2_model: str = "facebook/dinov2-large",
         mof_strategy: str = "interleave",
+        use_dino: bool = True,
         use_lora: bool = False,
         lora_rank: int = 16,
         lora_alpha: int = 32,
@@ -100,7 +101,8 @@ class FaceGroundVLM(nn.Module):
     ):
         super().__init__()
         self.use_lora = use_lora
-        self.mof_fn = MOF_STRATEGIES[mof_strategy]
+        self.use_dino = use_dino
+        self.mof_fn = MOF_STRATEGIES[mof_strategy] if use_dino else None
 
         # --- PaliGemma2 (SigLIP + Projector + Gemma2) ---
         self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
@@ -121,18 +123,20 @@ class FaceGroundVLM(nn.Module):
             type(vt).__name__, type(lm).__name__,
         )
 
-        # --- DINOv2 (frozen) ---
-        self.dinov2 = Dinov2Model.from_pretrained(
-            dinov2_model,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-        )
-        self.dinov2.requires_grad_(False)
-
-        # --- DINOv2 Adapter (trainable) ---
-        dino_dim = self.dinov2.config.hidden_size
-        gemma_dim = self.paligemma.config.text_config.hidden_size
-        self.dino_adapter = DINOv2Adapter(dino_dim=dino_dim, gemma_dim=gemma_dim)
+        # --- DINOv2 (optional, frozen) ---
+        if self.use_dino:
+            self.dinov2 = Dinov2Model.from_pretrained(
+                dinov2_model,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+            )
+            self.dinov2.requires_grad_(False)
+            dino_dim = self.dinov2.config.hidden_size
+            gemma_dim = self.paligemma.config.text_config.hidden_size
+            self.dino_adapter = DINOv2Adapter(dino_dim=dino_dim, gemma_dim=gemma_dim)
+        else:
+            self.dinov2 = None
+            self.dino_adapter = None
 
         # --- LoRA on Gemma2 ---
         if use_lora:
@@ -210,14 +214,17 @@ class FaceGroundVLM(nn.Module):
     def _encode_vision(
         self,
         pixel_values_siglip: torch.Tensor,
-        pixel_values_dino: torch.Tensor,
+        pixel_values_dino: torch.Tensor | None,
     ) -> torch.Tensor:
-        """Encode image through both vision towers and mix features."""
+        """Encode image through SigLIP and, optionally, DINOv2 with I-MoF."""
         with torch.no_grad():
             siglip_out = self._vision_tower(
                 pixel_values=pixel_values_siglip
             ).last_hidden_state
             siglip_proj = self._mm_projector(siglip_out)
+
+            if not self.use_dino or pixel_values_dino is None:
+                return siglip_proj
 
             dino_out = self.dinov2(
                 pixel_values=pixel_values_dino
@@ -360,8 +367,17 @@ class FaceGroundVLM(nn.Module):
             self.train()
         return output_ids
 
+    @property
+    def hidden_size(self) -> int:
+        """LLM hidden size, used by the LoRA-MoE router."""
+        return int(self.paligemma.config.text_config.hidden_size)
+
     def trainable_summary(self) -> str:
-        adapter_p = sum(p.numel() for p in self.dino_adapter.parameters() if p.requires_grad)
+        adapter_p = 0
+        if self.dino_adapter is not None:
+            adapter_p = sum(
+                p.numel() for p in self.dino_adapter.parameters() if p.requires_grad
+            )
         lora_p = 0
         if self.use_lora:
             lora_p = sum(

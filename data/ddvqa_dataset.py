@@ -1,8 +1,7 @@
 """DD-VQA JSONL dataset for Stage 2+ fine-tuning (from scripts/prepare_ddvqa.py).
 
-Uses the tokenizer and image_processor from PaliGemma separately to
-avoid injecting <image> placeholder tokens (visual features are
-handled externally via DINOv2 + I-MoF in FaceGroundVLM).
+Backbone-agnostic: receives tokenizer and image_processor separately plus
+an explicit ``backbone`` flag so the prompt formatting matches the LLM.
 """
 from __future__ import annotations
 
@@ -15,6 +14,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from .prompt_formats import format_vqa_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,14 +26,17 @@ class DDVQADataset(Dataset):
         self,
         metadata_path: str,
         image_root: str,
-        processor: Any,
+        tokenizer: Any,
+        image_processor: Any,
         dino_transform: Any,
+        backbone: str = "paligemma",
         max_length: int = 256,
     ):
         self.image_root = image_root
-        self.tokenizer = processor.tokenizer
-        self.image_processor = processor.image_processor
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
         self.dino_transform = dino_transform
+        self.backbone = backbone
         self.max_length = max_length
 
         self.samples: list[dict] = []
@@ -45,8 +49,8 @@ class DDVQADataset(Dataset):
         n_real = sum(1 for s in self.samples if s.get("label", "").lower() == "real")
         n_fake = len(self.samples) - n_real
         logger.info(
-            "Loaded %d samples from %s (real=%d, fake=%d)",
-            len(self.samples), metadata_path, n_real, n_fake,
+            "Loaded %d samples from %s (real=%d, fake=%d, backbone=%s)",
+            len(self.samples), metadata_path, n_real, n_fake, backbone,
         )
 
     def __len__(self) -> int:
@@ -69,7 +73,7 @@ class DDVQADataset(Dataset):
 
         question = row.get("question", "")
         answer = row.get("answer", "")
-        full_text = f"{question}\n{answer}"
+        full_text, prefix_text = format_vqa_prompt(question, answer, self.backbone)
 
         pixel_values_siglip = self.image_processor(
             images=img, return_tensors="pt"
@@ -85,10 +89,7 @@ class DDVQADataset(Dataset):
         input_ids = enc["input_ids"].squeeze(0)
         attention_mask = enc["attention_mask"].squeeze(0)
 
-        prefix_enc = self.tokenizer(
-            f"{question}\n",
-            add_special_tokens=True,
-        )
+        prefix_enc = self.tokenizer(prefix_text, add_special_tokens=True)
         prefix_len = len(prefix_enc["input_ids"])
 
         labels = input_ids.clone()

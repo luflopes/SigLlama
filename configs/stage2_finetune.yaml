@@ -10,9 +10,11 @@
 seed: 42
 
 # --- Models ---
+backbone: "paligemma"
 paligemma_model: "google/paligemma2-3b-pt-448"
 dinov2_model: "facebook/dinov2-large"
 mof_strategy: "interleave"
+use_dino: true
 
 # --- Stage 1 checkpoint ---
 adapter_checkpoint: "outputs/stage1_adapter/checkpoint-final.pt"

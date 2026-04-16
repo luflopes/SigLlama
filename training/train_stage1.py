@@ -16,13 +16,13 @@ import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from data.lcs558k_dataset import LCS558KDataset, collate_skip_none
-from models.face_ground_vlm import FaceGroundVLM
+from models import build_model
 from torch.optim import SGD
 from torch.utils.data import DataLoader, random_split
-from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
-from transformers import AutoProcessor, get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup
 
+from training.factory import build_processor_and_transforms
 from training.sample_utils import decode_ids, save_samples
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,24 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_dataloaders(cfg: dict, processor, dino_transform):
+def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
     full = LCS558KDataset(
         metadata_path=cfg["metadata_path"],
         image_root=cfg["image_root"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
+        backbone=cfg.get("backbone", "paligemma"),
         max_length=cfg.get("max_text_length", 128),
     )
+
+    g = torch.Generator().manual_seed(int(cfg.get("seed", 42)))
+
+    max_train = cfg.get("max_train_samples")
+    if max_train and max_train < len(full):
+        full, _ = random_split(full, [max_train, len(full) - max_train], generator=g)
+        logger.info("Sub-sampled dataset to %d samples", max_train)
+
     val_size = int(cfg["val_size"])
     if val_size <= 0:
         train_ds = full
@@ -64,7 +74,6 @@ def build_dataloaders(cfg: dict, processor, dino_transform):
             train_ds = full
             val_ds = None
         else:
-            g = torch.Generator().manual_seed(int(cfg.get("seed", 42)))
             train_ds, val_ds = random_split(
                 full, [n - val_size, val_size], generator=g
             )
@@ -186,27 +195,23 @@ def main() -> None:
         mixed_precision=cfg.get("mixed_precision", "no"),
     )
 
-    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
-    tokenizer = processor.tokenizer
+    proc = build_processor_and_transforms(cfg)
+    tokenizer = proc["tokenizer"]
+    image_processor = proc["image_processor"]
+    dino_transform = proc["dino_transform"]
 
-    dino_transform = Compose(
-        [
-            Resize((448, 448)),
-            ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-    model = FaceGroundVLM(
-        paligemma_model=cfg["paligemma_model"],
-        dinov2_model=cfg["dinov2_model"],
-        mof_strategy=cfg["mof_strategy"],
-        use_lora=False,
-    )
+    model = build_model(cfg, use_lora=False)
     if cfg.get("gradient_checkpointing", True):
         model.enable_gradient_checkpointing()
 
-    train_loader, val_loader = build_dataloaders(cfg, processor, dino_transform)
+    if model.dino_adapter is None:
+        raise ValueError(
+            "Stage 1 trains the DINOv2 adapter; set use_dino=true in the config."
+        )
+
+    train_loader, val_loader = build_dataloaders(
+        cfg, tokenizer, image_processor, dino_transform,
+    )
 
     lr = float(cfg.get("learning_rate", 1e-4))
     optimizer = SGD(

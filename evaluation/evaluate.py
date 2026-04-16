@@ -20,13 +20,13 @@ import sys
 
 import torch
 import yaml
-from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from data.ddvqa_dataset import DDVQADataset, collate_ddvqa  # noqa: E402
-from models.face_ground_vlm import FaceGroundVLM  # noqa: E402
+from models import build_model  # noqa: E402
+from training.factory import build_processor_and_transforms  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger("evaluate")
@@ -53,20 +53,12 @@ def parse_real_fake(text: str) -> str:
     return "fake"
 
 
-def load_model(cfg: dict, checkpoint_path: str, device: torch.device) -> FaceGroundVLM:
-    model = FaceGroundVLM(
-        paligemma_model=cfg["paligemma_model"],
-        dinov2_model=cfg["dinov2_model"],
-        mof_strategy=cfg.get("mof_strategy", "interleave"),
-        use_lora=True,
-        lora_rank=cfg.get("lora_rank", 16),
-        lora_alpha=cfg.get("lora_alpha", 32),
-        lora_target_modules=cfg.get("lora_target_modules"),
-        lora_dropout=cfg.get("lora_dropout", 0.05),
-    )
+def load_model(cfg: dict, checkpoint_path: str, device: torch.device):
+    model = build_model(cfg, use_lora=True)
 
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    model.dino_adapter.load_state_dict(ckpt["adapter"])
+    if model.dino_adapter is not None and "adapter" in ckpt:
+        model.dino_adapter.load_state_dict(ckpt["adapter"])
     if "lora" in ckpt:
         from peft import set_peft_model_state_dict
         set_peft_model_state_dict(model.language_model, ckpt["lora"])
@@ -85,15 +77,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(cfg, args.checkpoint, device)
 
-    from transformers import AutoProcessor
-    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
-    tokenizer = processor.tokenizer
-
-    dino_transform = Compose([
-        Resize((448, 448)),
-        ToTensor(),
-        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    proc = build_processor_and_transforms(cfg)
+    tokenizer = proc["tokenizer"]
+    image_processor = proc["image_processor"]
+    dino_transform = proc["dino_transform"]
 
     meta_key = "val_metadata" if args.split == "val" else "test_metadata"
     metadata_path = cfg.get(meta_key, cfg.get("val_metadata"))
@@ -101,8 +88,10 @@ def main():
     dataset = DDVQADataset(
         metadata_path=metadata_path,
         image_root=cfg["image_root"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
+        backbone=cfg.get("backbone", "paligemma"),
         max_length=cfg.get("max_text_length", 256),
     )
 

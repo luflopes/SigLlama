@@ -1,0 +1,56 @@
+# =============================================================
+# Stage 1 (TinyLLaVA) — DINOv2 Adapter pre-training on LCS-558K
+# =============================================================
+# The SigLIP->TinyLlama MLP connector is already aligned (loaded from
+# bczhou/TinyLLaVA-1.5B) and is kept frozen here. Only the DINOv2
+# adapter (1024 -> 2048) is trained so the DINOv2 branch maps into
+# TinyLlama's hidden space.
+#
+# If you set use_dino=false this stage can be SKIPPED entirely --
+# jump directly to stage 2 since the connector alone already bridges
+# SigLIP and TinyLlama.
+#
+# Usage:
+#   python training/train_stage1.py --config configs/tinyllava_stage1_adapter.yaml
+
+seed: 42
+
+# --- Backbone ---
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+dinov2_model: "facebook/dinov2-large"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+# --- Data ---
+metadata_path: "/datasets/deepfake/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
+image_root: "/datasets/deepfake/lcs-558k"
+max_text_length: 128
+max_train_samples: 200000
+val_size: 1000
+
+# --- Training ---
+max_epochs: 1
+batch_size: 32
+gradient_accumulation_steps: 2    # effective batch = 64
+num_workers: 8
+
+learning_rate: 1.0e-4
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+# --- Logging & checkpointing ---
+log_interval: 100
+save_interval: 1000
+val_interval: 1000
+sample_interval: 2000
+output_dir: "outputs/tinyllava_stage1_adapter"

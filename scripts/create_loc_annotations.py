@@ -1,4 +1,4 @@
-"""Enrich DD-VQA annotations with <loc> tokens for facial region grounding.
+"""Enrich DD-VQA annotations with textual ``[y1,x1,y2,x2]`` bounding boxes.
 
 Reads:
   - Original DD-VQA JSONL (train.jsonl / val.jsonl)
@@ -6,7 +6,11 @@ Reads:
 
 Writes:
   - Enriched JSONL (train_loc.jsonl / val_loc.jsonl) where answers
-    include <locYYYY><locXXXX> bounding-box tokens for facial regions.
+    include ``[y1,x1,y2,x2]`` bounding boxes (integer coords in [0, 1000])
+    grounding each explanation to a facial region.
+
+This textual format works consistently for both PaliGemma2 and TinyLLaVA
+backbones without requiring additional tokens in the vocabulary.
 
 Usage::
 
@@ -98,13 +102,18 @@ REAL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def landmarks_to_loc_tokens(
+BBOX_COORD_SCALE = 1000
+
+
+def landmarks_to_bbox_text(
     landmarks: list[list[float]],
     region_indices: list[int],
 ) -> str | None:
-    """Convert a set of landmark indices to a PaliGemma2 <loc> bounding box.
+    """Convert landmark indices to a textual bounding box ``[y1,x1,y2,x2]``.
 
-    Format: <locYmin><locXmin><locYmax><locXmax>, each in [0, 1023].
+    Coordinates are integers in ``[0, BBOX_COORD_SCALE]`` so the format is
+    backbone-agnostic: both PaliGemma2 and TinyLlama can read/emit it as
+    plain tokens without extending the vocabulary.
     """
     valid = [i for i in region_indices if i < len(landmarks)]
     if not valid:
@@ -121,12 +130,12 @@ def landmarks_to_loc_tokens(
     x_max = max(0.0, min(1.0, x_max))
     y_max = max(0.0, min(1.0, y_max))
 
-    ly1 = int(y_min * 1023)
-    lx1 = int(x_min * 1023)
-    ly2 = int(y_max * 1023)
-    lx2 = int(x_max * 1023)
+    ly1 = int(round(y_min * BBOX_COORD_SCALE))
+    lx1 = int(round(x_min * BBOX_COORD_SCALE))
+    ly2 = int(round(y_max * BBOX_COORD_SCALE))
+    lx2 = int(round(x_max * BBOX_COORD_SCALE))
 
-    return f"<loc{ly1:04d}><loc{lx1:04d}><loc{ly2:04d}><loc{lx2:04d}>"
+    return f"[{ly1},{lx1},{ly2},{lx2}]"
 
 
 def build_enriched_answer_fake(
@@ -134,20 +143,22 @@ def build_enriched_answer_fake(
     landmarks: list[list[float]],
     original_answer: str,
 ) -> str:
-    """Build a <loc>-enriched explanation for a fake image."""
+    """Build a bbox-enriched explanation for a fake image."""
     regions = TECHNIQUE_REGIONS.get(method, ["mouth", "jawline"])
     descs = TECHNIQUE_DESCRIPTIONS.get(method, {})
 
-    parts = [f"This image is fake."]
+    parts = ["This image is fake."]
     for region_name in regions:
         indices = FACIAL_REGIONS.get(region_name)
         if indices is None:
             continue
-        loc_str = landmarks_to_loc_tokens(landmarks, indices)
-        if loc_str is None:
+        bbox_str = landmarks_to_bbox_text(landmarks, indices)
+        if bbox_str is None:
             continue
         desc = descs.get(region_name, "shows manipulation artifacts")
-        parts.append(f"The {region_name.replace('_', ' ')} region {loc_str} {desc}.")
+        parts.append(
+            f"The {region_name.replace('_', ' ')} region {bbox_str} {desc}."
+        )
 
     return " ".join(parts)
 
@@ -156,7 +167,7 @@ def build_enriched_answer_real(
     landmarks: list[list[float]],
     original_answer: str,
 ) -> str:
-    """Build a <loc>-enriched description for a real image."""
+    """Build a bbox-enriched description for a real image."""
     inspect_regions = ["left_eye", "mouth", "jawline"]
 
     parts = ["This image is real."]
@@ -164,11 +175,13 @@ def build_enriched_answer_real(
         indices = FACIAL_REGIONS.get(region_name)
         if indices is None:
             continue
-        loc_str = landmarks_to_loc_tokens(landmarks, indices)
-        if loc_str is None:
+        bbox_str = landmarks_to_bbox_text(landmarks, indices)
+        if bbox_str is None:
             continue
         desc = REAL_DESCRIPTIONS.get(region_name, "appears natural")
-        parts.append(f"The {region_name.replace('_', ' ')} region {loc_str} {desc}.")
+        parts.append(
+            f"The {region_name.replace('_', ' ')} region {bbox_str} {desc}."
+        )
 
     return " ".join(parts)
 

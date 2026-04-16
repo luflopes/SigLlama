@@ -28,15 +28,15 @@ import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from data.ddvqa_dataset import DDVQADataset, collate_ddvqa
-from models.face_ground_vlm import FaceGroundVLM
+from models import build_model, model_hidden_size
 from models.lora_moe import LoRAMoERouter
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 from tqdm import tqdm
-from transformers import AutoProcessor, get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup
 
+from training.factory import build_processor_and_transforms
 from training.sample_utils import decode_ids, save_samples
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,12 @@ def parse_args():
 
 
 class FaceGroundVLM_MoE(nn.Module):
-    """Wraps FaceGroundVLM with LoRA-MoE: multiple LoRA state dicts
-    blended at inference via a router."""
+    """Wraps a backbone VLM with LoRA-MoE: multiple LoRA state dicts
+    blended at inference via a router. Works with PaliGemma2 and TinyLLaVA."""
 
     def __init__(
         self,
-        base_model: FaceGroundVLM,
+        base_model: nn.Module,
         num_experts: int,
         router_hidden_dim: int,
         base_lora_sd: dict,
@@ -78,8 +78,8 @@ class FaceGroundVLM_MoE(nn.Module):
         self.base_model = base_model
         self.num_experts = num_experts
 
-        gemma_dim = base_model.paligemma.config.text_config.hidden_size
-        self.router = LoRAMoERouter(gemma_dim, num_experts, router_hidden_dim)
+        hidden_dim = model_hidden_size(base_model)
+        self.router = LoRAMoERouter(hidden_dim, num_experts, router_hidden_dim)
 
         self.expert_lora_params = nn.ParameterList()
         flat_base = {k: v.clone() for k, v in base_lora_sd.items()}
@@ -188,20 +188,26 @@ def maybe_sample(
     )
 
 
-def build_dataloaders(cfg, processor, dino_transform):
+def build_dataloaders(cfg, tokenizer, image_processor, dino_transform):
+    backbone = cfg.get("backbone", "paligemma")
+    max_len = cfg.get("max_text_length", 384)
     train_ds = DDVQADataset(
         metadata_path=cfg["train_metadata"],
         image_root=cfg["image_root"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
-        max_length=cfg.get("max_text_length", 384),
+        backbone=backbone,
+        max_length=max_len,
     )
     val_ds = DDVQADataset(
         metadata_path=cfg["val_metadata"],
         image_root=cfg["image_root"],
-        processor=processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         dino_transform=dino_transform,
-        max_length=cfg.get("max_text_length", 384),
+        backbone=backbone,
+        max_length=max_len,
     )
 
     nw = cfg["num_workers"]
@@ -250,29 +256,17 @@ def main():
         mixed_precision=cfg.get("mixed_precision", "no"),
     )
 
-    processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
-    tokenizer = processor.tokenizer
+    proc = build_processor_and_transforms(cfg)
+    tokenizer = proc["tokenizer"]
+    image_processor = proc["image_processor"]
+    dino_transform = proc["dino_transform"]
 
-    dino_transform = Compose([
-        Resize((448, 448)),
-        ToTensor(),
-        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    base_model = FaceGroundVLM(
-        paligemma_model=cfg["paligemma_model"],
-        dinov2_model=cfg["dinov2_model"],
-        mof_strategy=cfg.get("mof_strategy", "interleave"),
-        use_lora=True,
-        lora_rank=cfg["lora_rank"],
-        lora_alpha=cfg["lora_alpha"],
-        lora_target_modules=cfg.get("lora_target_modules"),
-        lora_dropout=cfg.get("lora_dropout", 0.05),
-    )
+    base_model = build_model(cfg, use_lora=True)
     base_model.enable_input_require_grads()
 
     ckpt = torch.load(cfg["adapter_checkpoint"], map_location="cpu")
-    base_model.dino_adapter.load_state_dict(ckpt["adapter"])
+    if base_model.dino_adapter is not None and "adapter" in ckpt:
+        base_model.dino_adapter.load_state_dict(ckpt["adapter"])
     if "lora" in ckpt:
         set_peft_model_state_dict(base_model.language_model, ckpt["lora"])
     base_lora_sd = get_peft_model_state_dict(base_model.language_model)
@@ -288,17 +282,22 @@ def main():
     )
     logger.info("Created MoE model with %d experts", cfg["num_experts"])
 
-    train_loader, val_loader = build_dataloaders(cfg, processor, dino_transform)
+    train_loader, val_loader = build_dataloaders(
+        cfg, tokenizer, image_processor, dino_transform,
+    )
 
-    adapter_params = list(model.base_model.dino_adapter.parameters())
     router_params = list(model.router.parameters())
     expert_params = list(model.expert_lora_params.parameters())
 
-    optimizer = AdamW([
-        {"params": adapter_params, "lr": float(cfg.get("adapter_lr", 5e-5))},
-        {"params": expert_params, "lr": float(cfg.get("lora_lr", 1e-5))},
-        {"params": router_params, "lr": float(cfg.get("router_lr", 1e-4))},
-    ])
+    opt_groups: list[dict] = []
+    if model.base_model.dino_adapter is not None:
+        adapter_params = list(model.base_model.dino_adapter.parameters())
+        opt_groups.append(
+            {"params": adapter_params, "lr": float(cfg.get("adapter_lr", 5e-5))}
+        )
+    opt_groups.append({"params": expert_params, "lr": float(cfg.get("lora_lr", 1e-5))})
+    opt_groups.append({"params": router_params, "lr": float(cfg.get("router_lr", 1e-4))})
+    optimizer = AdamW(opt_groups)
 
     grad_accum = int(cfg["gradient_accumulation_steps"])
     max_epochs = int(cfg["max_epochs"])
@@ -393,14 +392,16 @@ def main():
 
                     if save_interval > 0 and global_step % save_interval == 0 and accelerator.is_main_process:
                         um = accelerator.unwrap_model(model)
-                        torch.save({
+                        state = {
                             "step": global_step,
-                            "adapter": um.base_model.dino_adapter.state_dict(),
                             "expert_lora_params": um.expert_lora_params.state_dict(),
                             "router": um.router.state_dict(),
                             "optimizer": optimizer.state_dict(),
                             "scheduler": scheduler.state_dict(),
-                        }, output_dir / f"checkpoint-{global_step}.pt")
+                        }
+                        if um.base_model.dino_adapter is not None:
+                            state["adapter"] = um.base_model.dino_adapter.state_dict()
+                        torch.save(state, output_dir / f"checkpoint-{global_step}.pt")
                         logger.info("Saved checkpoint-%d", global_step)
 
         if accelerator.is_main_process and n_batches > 0:
@@ -408,12 +409,14 @@ def main():
 
     if accelerator.is_main_process:
         um = accelerator.unwrap_model(model)
-        torch.save({
+        state = {
             "step": global_step,
-            "adapter": um.base_model.dino_adapter.state_dict(),
             "expert_lora_params": um.expert_lora_params.state_dict(),
             "router": um.router.state_dict(),
-        }, output_dir / "checkpoint-final.pt")
+        }
+        if um.base_model.dino_adapter is not None:
+            state["adapter"] = um.base_model.dino_adapter.state_dict()
+        torch.save(state, output_dir / "checkpoint-final.pt")
         logger.info("Saved final checkpoint")
 
 

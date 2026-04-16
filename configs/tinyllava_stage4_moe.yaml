@@ -1,24 +1,30 @@
 # =============================================================
-# Stage 4 — LoRA-MoE fine-tuning per manipulation technique
+# Stage 4 (TinyLLaVA) — LoRA-MoE per manipulation technique
 # =============================================================
-# Replace single LoRA with LoRA-MoE: one expert per deepfake
-# technique + a learned router based on visual features.
+# One LoRA expert per deepfake technique + a router conditioned on
+# pooled visual features.
 #
 # Usage:
-#   python training/train_stage4.py --config configs/stage4_moe.yaml
+#   python training/train_stage4.py --config configs/tinyllava_stage4_moe.yaml
 
 seed: 42
 
-# --- Models ---
-backbone: "paligemma"
-paligemma_model: "google/paligemma2-3b-pt-448"
+# --- Backbone ---
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
 dinov2_model: "facebook/dinov2-large"
-mof_strategy: "interleave"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
 use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
 
 # --- Stage 3 checkpoint ---
-adapter_checkpoint: "outputs/stage3_loc/checkpoint-final.pt"
-lora_checkpoint: "outputs/stage3_loc/checkpoint-final.pt"
+adapter_checkpoint: "outputs/tinyllava_stage3_loc/checkpoint-final.pt"
+lora_checkpoint: "outputs/tinyllava_stage3_loc/checkpoint-final.pt"
 
 # --- Data ---
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train_loc.jsonl"
@@ -38,8 +44,8 @@ router_loss_weight: 0.1
 
 # --- Training ---
 max_epochs: 5
-batch_size: 16
-gradient_accumulation_steps: 4
+batch_size: 32
+gradient_accumulation_steps: 2
 num_workers: 8
 balanced_sampling: true
 
@@ -57,4 +63,4 @@ log_interval: 50
 save_interval: 500
 val_interval: 500
 sample_interval: 1000
-output_dir: "outputs/stage4_moe"
+output_dir: "outputs/tinyllava_stage4_moe"

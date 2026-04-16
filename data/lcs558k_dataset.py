@@ -1,8 +1,9 @@
 """LCS-558K image-captioning dataset for Stage 1 adapter pre-training.
 
-Uses the tokenizer and image_processor from PaliGemma separately to
-avoid injecting <image> placeholder tokens (visual features are
-handled externally via DINOv2 + I-MoF in FaceGroundVLM).
+Backbone-agnostic: accepts tokenizer and image_processor separately
+(from ``training.factory.build_processor_and_transforms``) plus an
+explicit ``backbone`` flag so the prompt formatting is consistent with
+the downstream LLM.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ from typing import Any
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+
+from .prompt_formats import format_caption_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +38,17 @@ class LCS558KDataset(Dataset):
         self,
         metadata_path: str,
         image_root: str,
-        processor: Any,
+        tokenizer: Any,
+        image_processor: Any,
         dino_transform: Any,
+        backbone: str = "paligemma",
         max_length: int = 128,
     ):
         self.image_root = image_root
-        self.tokenizer = processor.tokenizer
-        self.image_processor = processor.image_processor
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
         self.dino_transform = dino_transform
+        self.backbone = backbone
         self.max_length = max_length
 
         with open(metadata_path, "r", encoding="utf-8") as f:
@@ -63,7 +69,8 @@ class LCS558KDataset(Dataset):
             self.samples.append({"image_path": img_path, "caption": caption})
 
         logger.info(
-            "Loaded %d samples from %s (skipped %d)", len(self.samples), metadata_path, skipped
+            "Loaded %d samples from %s (skipped %d, backbone=%s)",
+            len(self.samples), metadata_path, skipped, backbone,
         )
 
     def __len__(self) -> int:
@@ -76,14 +83,14 @@ class LCS558KDataset(Dataset):
         except Exception:
             return None
 
-        caption = sample["caption"]
+        text = format_caption_prompt(sample["caption"], self.backbone)
 
         pixel_values_siglip = self.image_processor(
             images=img, return_tensors="pt"
         )["pixel_values"].squeeze(0)
 
         enc = self.tokenizer(
-            caption,
+            text,
             return_tensors="pt",
             padding="max_length",
             truncation=True,
