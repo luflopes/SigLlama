@@ -247,9 +247,12 @@ def main() -> None:
         p for p in model.language_model.parameters() if p.requires_grad
     ]
     opt_groups: list[dict] = []
+    group_names: list[str] = []
     if adapter_params:
         opt_groups.append({"params": adapter_params, "lr": float(cfg["adapter_lr"])})
+        group_names.append("adapter")
     opt_groups.append({"params": lora_params, "lr": float(cfg["lora_lr"])})
+    group_names.append("lora")
     optimizer = AdamW(opt_groups)
 
     grad_accum = int(cfg["gradient_accumulation_steps"])
@@ -346,12 +349,10 @@ def main() -> None:
                     n_batches += 1
 
                     lrs = scheduler.get_last_lr()
-                    pbar.set_postfix(
-                        loss=f"{li:.4f}",
-                        lr_a=f"{lrs[0]:.2e}",
-                        lr_l=f"{lrs[1]:.2e}",
-                        step=global_step,
-                    )
+                    postfix = {"loss": f"{li:.4f}", "step": global_step}
+                    for name, lr in zip(group_names, lrs):
+                        postfix[f"lr_{name[:1]}"] = f"{lr:.2e}"
+                    pbar.set_postfix(**postfix)
 
                     if global_step % log_interval == 0 and accelerator.is_main_process:
                         logger.info(
