@@ -1,11 +1,12 @@
 # =============================================================
-# Stage 2 (TinyLLaVA) — DINO adapter (cont.) + LoRA on TinyLlama
+# Stage 2 (TinyLLaVA) — LoRA only on TinyLlama
 # =============================================================
-# TinyLlama target modules mirror the LLaMA convention:
-#   q_proj, v_proj (+ optionally k_proj, o_proj for stronger LoRA).
-#
-# With use_dino=false this is the FIRST trainable stage (connector and
-# SigLIP stay frozen; only LoRA is learned).
+# Partida direta na Stage 2, SEM DINOv2 (TinyLLaVA puro):
+#   * SigLIP, MLP connector e TinyLlama vêm dos pesos fine-tunados do
+#     bczhou/TinyLLaVA-1.5B (share recipe) e ficam congelados no forward.
+#   * Não há DINOv2 nem adapter — apenas SigLIP (729 tokens) alimenta a LLM.
+#   * Único componente treinado: LoRA em q_proj e v_proj da TinyLlama
+#     (convenção LLaMA).
 #
 # Usage:
 #   python training/train_stage2.py --config configs/tinyllava_stage2_finetune.yaml
@@ -16,17 +17,15 @@ seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 siglip_model: "google/siglip-so400m-patch14-384"
-dinov2_model: "facebook/dinov2-large"
 tinyllava_weights: "outputs/tinyllava_weights.pt"
 load_tinyllava_weights: true
-use_dino: true
-mof_strategy: "interleave"
+use_dino: false
 vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-# --- Stage 1 checkpoint (optional if use_dino=false) ---
-adapter_checkpoint: "outputs/tinyllava_stage1_adapter/checkpoint-final.pt"
+# --- Stage 1 checkpoint (sem Stage 1 nem DINO adapter) ---
+adapter_checkpoint: null
 lora_checkpoint: null
 
 # --- Data ---
@@ -48,6 +47,7 @@ gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 8
 balanced_sampling: true
 
+# adapter_lr é ignorado (sem DINO adapter), mantido por compatibilidade.
 adapter_lr: 1.0e-4
 lora_lr: 2.0e-5
 warmup_ratio: 0.03

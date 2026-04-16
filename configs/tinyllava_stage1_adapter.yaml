@@ -22,7 +22,7 @@ siglip_model: "google/siglip-so400m-patch14-384"
 dinov2_model: "facebook/dinov2-large"
 tinyllava_weights: "outputs/tinyllava_weights.pt"
 load_tinyllava_weights: true
-use_dino: true
+use_dino: false
 mof_strategy: "interleave"
 vision_select_layer: -2
 connector_hidden_dim: 2048
