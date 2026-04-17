@@ -25,6 +25,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from data.ddvqa_dataset import DDVQADataset, collate_ddvqa  # noqa: E402
+from data.prompt_formats import build_generation_inputs  # noqa: E402
 from models import build_model  # noqa: E402
 from training.factory import build_processor_and_transforms  # noqa: E402
 
@@ -109,15 +110,23 @@ def main():
     true_labels: list[str] = []
     per_sample_rows: list[dict] = []
 
+    backbone = cfg.get("backbone", "paligemma")
     logger.info("Running inference on %d samples...", len(dataset))
     for batch in tqdm(loader, desc="Evaluating"):
         if batch is None:
             continue
 
+        # Rebuild *query-only* inputs (left-padded) for generation so the
+        # model is never fed the reference answer.
+        questions = batch.get("question", [])
+        gen_inputs = build_generation_inputs(
+            questions, tokenizer, backbone,
+            max_length=cfg.get("max_text_length", 256),
+        )
         pv_sig = batch["pixel_values_siglip"].to(device)
         pv_din = batch["pixel_values_dino"].to(device)
-        inp_ids = batch["input_ids"].to(device)
-        attn = batch["attention_mask"].to(device)
+        inp_ids = gen_inputs["input_ids"].to(device)
+        attn = gen_inputs["attention_mask"].to(device)
 
         with torch.no_grad():
             gen_ids = model.generate(
@@ -129,10 +138,8 @@ def main():
             )
 
         gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-
-        ref_ids = batch["labels"]
-        ref_ids[ref_ids == -100] = tokenizer.pad_token_id or 0
-        ref_texts = tokenizer.batch_decode(ref_ids, skip_special_tokens=True)
+        # Reference strings come from the original (untruncated) answer field.
+        ref_texts = list(batch.get("answer", []))
 
         images = batch.get("image", [""] * len(gen_texts))
         questions = batch.get("question", [""] * len(gen_texts))

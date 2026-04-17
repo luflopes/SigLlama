@@ -9,6 +9,10 @@ and including ``ASSISTANT:`` is masked for loss computation.
 """
 from __future__ import annotations
 
+from typing import Any
+
+import torch
+
 
 def format_caption_prompt(caption: str, backbone: str) -> str:
     """Format an LCS-558K caption sample for either backbone."""
@@ -50,3 +54,37 @@ def format_vqa_query(question: str, backbone: str) -> str:
     if backbone == "tinyllava":
         return f"USER: {question} ASSISTANT: "
     raise ValueError(f"Unknown backbone '{backbone}'")
+
+
+def build_generation_inputs(
+    questions: list[str],
+    tokenizer: Any,
+    backbone: str,
+    max_length: int = 128,
+) -> dict[str, torch.Tensor]:
+    """Tokenise a batch of query prefixes with LEFT-padding for generation.
+
+    Causal LMs require left-padding during generation so that the *last*
+    non-pad token of every row in the batch is the one the model continues
+    from. Training uses right-padding; we swap the side temporarily here.
+
+    Returns a dict with ``input_ids`` and ``attention_mask`` on CPU.
+    """
+    prefixes = [format_vqa_query(q, backbone) for q in questions]
+    original_side = getattr(tokenizer, "padding_side", "right")
+    try:
+        tokenizer.padding_side = "left"
+        enc = tokenizer(
+            prefixes,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=True,
+        )
+    finally:
+        tokenizer.padding_side = original_side
+    return {
+        "input_ids": enc["input_ids"],
+        "attention_mask": enc["attention_mask"],
+    }

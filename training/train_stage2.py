@@ -16,6 +16,7 @@ import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from data.ddvqa_dataset import DDVQADataset, _sample_is_real, collate_ddvqa
+from data.prompt_formats import build_generation_inputs
 from models import build_model
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from torch.optim import AdamW
@@ -159,25 +160,39 @@ def maybe_sample(
     accelerator,
     output_dir: Path,
     global_step: int,
+    backbone: str,
     max_new_tokens: int = 128,
 ) -> None:
     if batch is None:
         return
     model_unwrap = accelerator.unwrap_model(model)
-    gen_batch = {
-        k: v
-        for k, v in batch.items()
-        if k in ("pixel_values_siglip", "pixel_values_dino", "input_ids", "attention_mask")
-    }
+    questions = batch.get("question", [])
+    if not questions:
+        # Fallback: fall back to the train input (shouldn't happen with the
+        # updated DDVQADataset but keeps the function robust).
+        references = decode_ids(batch.get("labels", batch["input_ids"]), tokenizer)
+        logger.warning("maybe_sample: no 'question' field; skipping generation")
+        return
+
+    gen_inputs = build_generation_inputs(questions, tokenizer, backbone)
+    device = batch["pixel_values_siglip"].device
     with torch.no_grad():
         gen_ids = model_unwrap.generate(
-            **gen_batch,
+            pixel_values_siglip=batch["pixel_values_siglip"],
+            pixel_values_dino=batch["pixel_values_dino"],
+            input_ids=gen_inputs["input_ids"].to(device),
+            attention_mask=gen_inputs["attention_mask"].to(device),
             max_new_tokens=max_new_tokens,
         )
     generated = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-    references = decode_ids(batch.get("labels", batch["input_ids"]), tokenizer)
+    references = list(batch.get("answer", []))
 
-    logger.info("sample generation: %s", generated[: min(2, len(generated))])
+    logger.info(
+        "sample gen[0]: Q=%r -> %r (ref=%r)",
+        questions[0][:80] if questions else "",
+        generated[0][:200] if generated else "",
+        references[0][:120] if references else "",
+    )
 
     save_samples(
         batch["pixel_values_dino"], generated, references,
@@ -224,6 +239,7 @@ def main() -> None:
     tokenizer = proc["tokenizer"]
     image_processor = proc["image_processor"]
     dino_transform = proc["dino_transform"]
+    backbone = cfg.get("backbone", "paligemma")
 
     model = build_model(cfg, use_lora=True)
     model.enable_input_require_grads()
@@ -370,7 +386,7 @@ def main() -> None:
                     ):
                         maybe_sample(
                             model, tokenizer, sample_batch, accelerator,
-                            output_dir, global_step,
+                            output_dir, global_step, backbone=backbone,
                         )
 
                     if (
@@ -415,7 +431,7 @@ def main() -> None:
                 logger.info("[epoch %s end] validation loss: %.6f", epoch, vloss)
             maybe_sample(
                 model, tokenizer, sample_batch, accelerator,
-                output_dir, global_step,
+                output_dir, global_step, backbone=backbone,
             )
 
     if accelerator.is_main_process:
