@@ -130,6 +130,11 @@ class TinyLLaVAGroundVLM(nn.Module):
         self.llm.requires_grad_(False)
         llm_hidden = self.llm.config.hidden_size  # 2048 for TinyLlama-1.1B
 
+        # Clear max_length on the default generation_config so that our
+        # max_new_tokens argument does not trigger the redundant warning.
+        if getattr(self.llm, "generation_config", None) is not None:
+            self.llm.generation_config.max_length = None
+
         # --- MLP connector (mlp2x_gelu): Linear-GELU-Linear ---
         # Indices 0 and 2 in the Sequential match the checkpoint keys
         # 'mm_projector.0.*' and 'mm_projector.2.*'.
