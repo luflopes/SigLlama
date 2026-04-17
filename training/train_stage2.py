@@ -51,14 +51,27 @@ def build_train_sampler(
     train_ds: DDVQADataset, cfg: dict
 ) -> WeightedRandomSampler | None:
     if not cfg.get("balanced_sampling", False):
+        logger.info("balanced_sampling disabled; using natural class distribution")
         return None
     n_real = sum(1 for s in train_ds.samples if _sample_is_real(s))
     n_fake = len(train_ds.samples) - n_real
-    wr = 1.0 / max(n_real, 1)
-    wf = 1.0 / max(n_fake, 1)
+    if n_real == 0 or n_fake == 0:
+        logger.warning(
+            "balanced_sampling requested but dataset has only one class "
+            "(real=%d, fake=%d); sampler disabled.",
+            n_real, n_fake,
+        )
+        return None
+    wr = 1.0 / n_real
+    wf = 1.0 / n_fake
     weights = [
         wr if _sample_is_real(s) else wf for s in train_ds.samples
     ]
+    logger.info(
+        "balanced_sampling enabled: n_real=%d, n_fake=%d "
+        "(weights: real=%.2e, fake=%.2e). Expected per-epoch ratio = 50/50.",
+        n_real, n_fake, wr, wf,
+    )
     return WeightedRandomSampler(
         weights,
         num_samples=len(weights),

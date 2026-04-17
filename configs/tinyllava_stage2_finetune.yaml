@@ -35,9 +35,20 @@ image_root: "/datasets/deepfake/ddvqa_prepared/frames"
 max_text_length: 256
 
 # --- LoRA ---
-lora_rank: 16
-lora_alpha: 32
-lora_target_modules: ["q_proj", "v_proj"]
+# Rank/alpha e target_modules expandidos p/ superar o prior conversacional
+# do checkpoint bczhou/TinyLLaVA-1.5B (que tende a responder "Real" por
+# default). Sem DINOv2, a LoRA precisa compensar a falta de features de
+# artefatos finos, logo aumentamos a capacidade adaptável (~4x em params).
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
 lora_dropout: 0.05
 
 # --- Training ---
@@ -45,7 +56,10 @@ max_epochs: 5
 batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 8
-balanced_sampling: true
+# Distribuição natural do DD-VQA é ~80:20 fake:real; manter o treino na
+# mesma distribuição do val/test evita mismatch de prior (que empurrava
+# o modelo a classificar fakes como reais após treino balanceado).
+balanced_sampling: false
 
 # adapter_lr é ignorado (sem DINO adapter), mantido por compatibilidade.
 adapter_lr: 1.0e-4

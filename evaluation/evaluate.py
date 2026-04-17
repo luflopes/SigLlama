@@ -41,6 +41,14 @@ def parse_args():
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--output-dir", default=None)
+    p.add_argument(
+        "--repetition-penalty", type=float, default=None,
+        help="Override generation_config.repetition_penalty (default: use model's).",
+    )
+    p.add_argument(
+        "--no-repeat-ngram-size", type=int, default=None,
+        help="Override generation_config.no_repeat_ngram_size (default: use model's).",
+    )
     return p.parse_args()
 
 
@@ -128,6 +136,12 @@ def main():
         inp_ids = gen_inputs["input_ids"].to(device)
         attn = gen_inputs["attention_mask"].to(device)
 
+        gen_overrides: dict = {}
+        if args.repetition_penalty is not None:
+            gen_overrides["repetition_penalty"] = args.repetition_penalty
+        if args.no_repeat_ngram_size is not None:
+            gen_overrides["no_repeat_ngram_size"] = args.no_repeat_ngram_size
+
         with torch.no_grad():
             gen_ids = model.generate(
                 pixel_values_siglip=pv_sig,
@@ -135,6 +149,7 @@ def main():
                 input_ids=inp_ids,
                 attention_mask=attn,
                 max_new_tokens=args.max_new_tokens,
+                **gen_overrides,
             )
 
         gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)

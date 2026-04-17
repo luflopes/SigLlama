@@ -130,10 +130,13 @@ class TinyLLaVAGroundVLM(nn.Module):
         self.llm.requires_grad_(False)
         llm_hidden = self.llm.config.hidden_size  # 2048 for TinyLlama-1.1B
 
-        # Clear max_length on the default generation_config so that our
-        # max_new_tokens argument does not trigger the redundant warning.
+        # Generation defaults: clear max_length (avoid redundant warning)
+        # and add anti-repetition heuristics since the fine-tuned TinyLlama
+        # occasionally falls into greedy-decoding loops on DD-VQA.
         if getattr(self.llm, "generation_config", None) is not None:
             self.llm.generation_config.max_length = None
+            self.llm.generation_config.repetition_penalty = 1.2
+            self.llm.generation_config.no_repeat_ngram_size = 4
 
         # --- MLP connector (mlp2x_gelu): Linear-GELU-Linear ---
         # Indices 0 and 2 in the Sequential match the checkpoint keys

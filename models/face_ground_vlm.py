@@ -112,6 +112,11 @@ class FaceGroundVLM(nn.Module):
         )
         self.paligemma.requires_grad_(False)
 
+        # Generation defaults to mitigate greedy-decoding loops on DD-VQA.
+        if getattr(self.paligemma, "generation_config", None) is not None:
+            self.paligemma.generation_config.repetition_penalty = 1.2
+            self.paligemma.generation_config.no_repeat_ngram_size = 4
+
         # --- Resolve internal component references (v4/v5 compat) ---
         vt, proj, lm, _ = _resolve_paligemma_components(self.paligemma)
         self._vision_tower = vt
