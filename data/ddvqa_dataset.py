@@ -88,6 +88,7 @@ class DDVQADataset(Dataset):
 
         question = row.get("question", "")
         answer = row.get("answer", "")
+        image_id = img_rel if img_rel else os.path.basename(img_path)
         full_text, prefix_text = format_vqa_prompt(question, answer, self.backbone)
 
         pixel_values_siglip = self.image_processor(
@@ -124,6 +125,9 @@ class DDVQADataset(Dataset):
             "labels": labels,
             "label_str": label_str,
             "method": method,
+            "image": image_id,
+            "question": question,
+            "answer": answer,
         }
 
 
@@ -137,6 +141,6 @@ def collate_ddvqa(batch: list) -> dict[str, Any] | None:
         "input_ids", "attention_mask", "labels",
     ]
     out: dict[str, Any] = {k: torch.stack([b[k] for b in batch]) for k in tensor_keys}
-    out["label_str"] = [b["label_str"] for b in batch]
-    out["method"] = [b["method"] for b in batch]
+    for meta_key in ("label_str", "method", "image", "question", "answer"):
+        out[meta_key] = [b[meta_key] for b in batch]
     return out

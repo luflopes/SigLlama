@@ -57,8 +57,11 @@ mixed_precision: "bf16"
 gradient_checkpointing: true
 
 # --- Logging & checkpointing ---
-log_interval: 50
-save_interval: 500
-val_interval: 500
-sample_interval: 1000
+# DD-VQA: 10 806 train samples, batch_size=32, grad_accum=2 -> ~169 optim steps
+# por época (845 steps em 5 épocas). Intervalos dimensionados para essa escala;
+# fallback garante 1 validação + 1 sample ao final de cada época.
+log_interval: 20
+save_interval: 200
+val_interval: 100
+sample_interval: 100
 output_dir: "outputs/tinyllava_stage2_finetune"

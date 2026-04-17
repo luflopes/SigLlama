@@ -107,6 +107,7 @@ def main():
     references: list[str] = []
     pred_labels: list[str] = []
     true_labels: list[str] = []
+    per_sample_rows: list[dict] = []
 
     logger.info("Running inference on %d samples...", len(dataset))
     for batch in tqdm(loader, desc="Evaluating"):
@@ -133,11 +134,34 @@ def main():
         ref_ids[ref_ids == -100] = tokenizer.pad_token_id or 0
         ref_texts = tokenizer.batch_decode(ref_ids, skip_special_tokens=True)
 
-        for gen, ref, lbl in zip(gen_texts, ref_texts, batch["label_str"]):
-            predictions.append(gen.strip())
-            references.append(ref.strip())
-            pred_labels.append(parse_real_fake(gen))
+        images = batch.get("image", [""] * len(gen_texts))
+        questions = batch.get("question", [""] * len(gen_texts))
+        answers = batch.get("answer", [""] * len(gen_texts))
+        methods = batch.get("method", ["unknown"] * len(gen_texts))
+
+        for gen, ref, lbl, img, q, a, meth in zip(
+            gen_texts, ref_texts, batch["label_str"],
+            images, questions, answers, methods,
+        ):
+            gen_str = gen.strip()
+            ref_str = ref.strip()
+            pred_lbl = parse_real_fake(gen_str)
+
+            predictions.append(gen_str)
+            references.append(ref_str)
+            pred_labels.append(pred_lbl)
             true_labels.append(lbl)
+
+            per_sample_rows.append({
+                "image": img,
+                "question": q,
+                "reference_answer": a or ref_str,
+                "generated": gen_str,
+                "true_label": lbl,
+                "pred_label": pred_lbl,
+                "correct": pred_lbl == lbl,
+                "method": meth,
+            })
 
     from evaluation.metrics import (
         compute_bleu,
@@ -169,7 +193,28 @@ def main():
     with open(os.path.join(output_dir, "results.json"), "w") as f:
         json.dump(results, f, indent=2)
 
+    predictions_path = os.path.join(output_dir, "predictions.jsonl")
+    with open(predictions_path, "w", encoding="utf-8") as f:
+        for row in per_sample_rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    import csv
+    predictions_csv = os.path.join(output_dir, "predictions.csv")
+    fieldnames = [
+        "image", "method", "true_label", "pred_label", "correct",
+        "question", "reference_answer", "generated",
+    ]
+    with open(predictions_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
+        writer.writeheader()
+        for row in per_sample_rows:
+            writer.writerow({k: row.get(k, "") for k in fieldnames})
+
     logger.info("Results saved to %s/results.json", output_dir)
+    logger.info(
+        "Per-sample predictions saved: %s (%d rows) and %s",
+        predictions_path, len(per_sample_rows), predictions_csv,
+    )
     for k, v in sorted(results.items()):
         logger.info("  %s: %.4f", k, v)
 

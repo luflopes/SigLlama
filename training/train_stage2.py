@@ -407,6 +407,17 @@ def main() -> None:
                 epoch_loss / n_batches,
             )
 
+        # End-of-epoch fallback: ensures at least one validation + one sample
+        # dump per epoch regardless of how val/sample_interval were configured.
+        if accelerator.is_main_process:
+            vloss = validation_loss(model, val_loader, accelerator)
+            if vloss is not None:
+                logger.info("[epoch %s end] validation loss: %.6f", epoch, vloss)
+            maybe_sample(
+                model, tokenizer, sample_batch, accelerator,
+                output_dir, global_step,
+            )
+
     if accelerator.is_main_process:
         um = accelerator.unwrap_model(model)
         final_path = output_dir / "checkpoint-final.pt"
