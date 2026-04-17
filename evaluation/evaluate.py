@@ -125,6 +125,9 @@ def load_model(cfg: dict, checkpoint_path: str, device: torch.device):
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if model.dino_adapter is not None and "adapter" in ckpt:
         model.dino_adapter.load_state_dict(ckpt["adapter"])
+    if "connector" in ckpt and hasattr(model, "connector"):
+        model.connector.load_state_dict(ckpt["connector"])
+        logger.info("Loaded fine-tuned connector weights from checkpoint")
     if "lora" in ckpt:
         from peft import set_peft_model_state_dict
         set_peft_model_state_dict(model.language_model, ckpt["lora"])

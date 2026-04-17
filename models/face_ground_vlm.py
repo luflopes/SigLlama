@@ -30,12 +30,12 @@ import logging
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from transformers import (
     Dinov2Model,
     PaliGemmaForConditionalGeneration,
 )
 
+from ._loss_utils import weighted_first_token_ce
 from .dino_adapter import DINOv2Adapter
 from .mixture_of_features import MOF_STRATEGIES
 
@@ -98,11 +98,13 @@ class FaceGroundVLM(nn.Module):
         lora_alpha: int = 32,
         lora_target_modules: list[str] | None = None,
         lora_dropout: float = 0.05,
+        first_token_loss_weight: float = 1.0,
     ):
         super().__init__()
         self.use_lora = use_lora
         self.use_dino = use_dino
         self.mof_fn = MOF_STRATEGIES[mof_strategy] if use_dino else None
+        self.first_token_loss_weight = float(first_token_loss_weight)
 
         # --- PaliGemma2 (SigLIP + Projector + Gemma2) ---
         self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
@@ -283,10 +285,9 @@ class FaceGroundVLM(nn.Module):
         del text_logits
         shift_labels = labels.contiguous()  # [B, T]
 
-        loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)).float(),
-            shift_labels.view(-1),
-            ignore_index=-100,
+        loss = weighted_first_token_ce(
+            shift_logits, shift_labels,
+            first_token_loss_weight=self.first_token_loss_weight,
         )
 
         return {"loss": loss}

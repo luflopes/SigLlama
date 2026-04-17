@@ -272,6 +272,13 @@ def main() -> None:
     adapter_params = (
         list(model.dino_adapter.parameters()) if model.dino_adapter is not None else []
     )
+    connector_params: list = []
+    if bool(cfg.get("train_connector", False)) and hasattr(model, "connector"):
+        # Only include params that were actually unfrozen by the model
+        # (TinyLLaVAGroundVLM does this when ``train_connector=True``).
+        connector_params = [
+            p for p in model.connector.parameters() if p.requires_grad
+        ]
     lora_params = [
         p for p in model.language_model.parameters() if p.requires_grad
     ]
@@ -280,9 +287,18 @@ def main() -> None:
     if adapter_params:
         opt_groups.append({"params": adapter_params, "lr": float(cfg["adapter_lr"])})
         group_names.append("adapter")
+    if connector_params:
+        opt_groups.append(
+            {"params": connector_params, "lr": float(cfg.get("connector_lr", 5.0e-6))}
+        )
+        group_names.append("connector")
     opt_groups.append({"params": lora_params, "lr": float(cfg["lora_lr"])})
     group_names.append("lora")
     optimizer = AdamW(opt_groups)
+    logger.info(
+        "Optimizer groups: %s",
+        [(n, sum(p.numel() for p in g["params"]), g["lr"]) for n, g in zip(group_names, opt_groups)],
+    )
 
     grad_accum = int(cfg["gradient_accumulation_steps"])
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
@@ -301,6 +317,8 @@ def main() -> None:
         ckpt = torch.load(args.resume, map_location="cpu")
         if model.dino_adapter is not None and "adapter" in ckpt:
             model.dino_adapter.load_state_dict(ckpt["adapter"])
+        if "connector" in ckpt and hasattr(model, "connector"):
+            model.connector.load_state_dict(ckpt["connector"])
         if "lora" in ckpt:
             set_peft_model_state_dict(
                 model.language_model, ckpt["lora"]
@@ -426,6 +444,8 @@ def main() -> None:
                         }
                         if um.dino_adapter is not None:
                             state["adapter"] = um.dino_adapter.state_dict()
+                        if getattr(um, "train_connector", False) and hasattr(um, "connector"):
+                            state["connector"] = um.connector.state_dict()
                         torch.save(state, ckpt_path)
                         logger.info("Saved %s", ckpt_path)
 
@@ -458,6 +478,8 @@ def main() -> None:
         }
         if um.dino_adapter is not None:
             state["adapter"] = um.dino_adapter.state_dict()
+        if getattr(um, "train_connector", False) and hasattr(um, "connector"):
+            state["connector"] = um.connector.state_dict()
         torch.save(state, final_path)
         logger.info("Saved %s", final_path)
 

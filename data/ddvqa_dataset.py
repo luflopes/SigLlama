@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import torch
@@ -34,6 +35,27 @@ def _sample_label_str(row: dict) -> str:
     return "real" if _sample_is_real(row) else "fake"
 
 
+# ``Real. `` / ``Fake. `` — uppercase with a period + single space, so that
+# SentencePiece (TinyLlama) keeps the verdict as a single token followed by
+# ``.`` and the justification after a space boundary.
+_VERDICT_PREFIX_RE = re.compile(r"^\s*(real|fake)\s*[.,:;!?-]*\s*", re.IGNORECASE)
+
+
+def _normalize_answer_with_verdict(answer: str, is_real: bool) -> str:
+    """Ensure the answer starts with ``Real. `` or ``Fake. `` exactly.
+
+    If the answer already opens with a real/fake token in any casing /
+    punctuation, that token is stripped and replaced by the canonical
+    verdict prefix. If no opening verdict is present, the prefix is
+    prepended. Either way, downstream tokenisation sees the same verdict
+    position on every sample, which is required for the weighted
+    first-token loss (``first_token_loss_weight``) to make sense.
+    """
+    verdict = "Real" if is_real else "Fake"
+    body = _VERDICT_PREFIX_RE.sub("", answer or "").lstrip()
+    return f"{verdict}. {body}" if body else f"{verdict}."
+
+
 class DDVQADataset(Dataset):
     """JSONL with ``image``, ``question``, ``answer``, ``is_real``/``label``, ``method``."""
 
@@ -46,6 +68,7 @@ class DDVQADataset(Dataset):
         dino_transform: Any,
         backbone: str = "paligemma",
         max_length: int = 256,
+        enforce_verdict_prefix: bool = True,
     ):
         self.image_root = image_root
         self.tokenizer = tokenizer
@@ -53,6 +76,7 @@ class DDVQADataset(Dataset):
         self.dino_transform = dino_transform
         self.backbone = backbone
         self.max_length = max_length
+        self.enforce_verdict_prefix = enforce_verdict_prefix
 
         self.samples: list[dict] = []
         with open(metadata_path, "r", encoding="utf-8") as f:
@@ -67,6 +91,23 @@ class DDVQADataset(Dataset):
             "Loaded %d samples from %s (real=%d, fake=%d, backbone=%s)",
             len(self.samples), metadata_path, n_real, n_fake, backbone,
         )
+
+        if enforce_verdict_prefix:
+            rewrites = 0
+            already_ok = 0
+            for s in self.samples:
+                orig = s.get("answer", "") or ""
+                norm = _normalize_answer_with_verdict(orig, _sample_is_real(s))
+                if norm != orig:
+                    s["answer"] = norm
+                    rewrites += 1
+                else:
+                    already_ok += 1
+            logger.info(
+                "Verdict-prefix normalisation: rewritten=%d, already_ok=%d "
+                "(total=%d)",
+                rewrites, already_ok, len(self.samples),
+            )
 
     def __len__(self) -> int:
         return len(self.samples)

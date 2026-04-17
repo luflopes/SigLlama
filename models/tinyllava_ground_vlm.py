@@ -44,6 +44,7 @@ from transformers import (
     SiglipVisionModel,
 )
 
+from ._loss_utils import weighted_first_token_ce
 from .dino_adapter import DINOv2Adapter
 from .mixture_of_features import MOF_STRATEGIES
 
@@ -104,12 +105,16 @@ class TinyLLaVAGroundVLM(nn.Module):
         lora_alpha: int = 32,
         lora_target_modules: list[str] | None = None,
         lora_dropout: float = 0.05,
+        first_token_loss_weight: float = 1.0,
+        train_connector: bool = False,
     ):
         super().__init__()
         self.use_lora = use_lora
         self.use_dino = use_dino
         self.mof_fn = MOF_STRATEGIES[mof_strategy] if use_dino else None
         self.vision_select_layer = vision_select_layer
+        self.first_token_loss_weight = float(first_token_loss_weight)
+        self.train_connector = bool(train_connector)
 
         # --- SigLIP vision tower (will be overridden by fine-tuned weights) ---
         self.siglip = SiglipVisionModel.from_pretrained(
@@ -170,11 +175,20 @@ class TinyLLaVAGroundVLM(nn.Module):
         if use_lora:
             self._apply_lora(lora_rank, lora_alpha, lora_target_modules, lora_dropout)
 
+        # Layer B: optionally let the MLP connector be fine-tuned jointly
+        # with the LoRA adapters. Must be re-enabled *after* loading the
+        # frozen TinyLLaVA weights so the checkpoint is preserved as the
+        # starting point and only gradients are activated.
+        if self.train_connector:
+            self.connector.requires_grad_(True)
+
         self._embed_tokens_ref = self._resolve_embed_tokens()
 
         logger.info(
-            "TinyLLaVAGroundVLM built (use_dino=%s, use_lora=%s, siglip=%d, llm=%d)",
+            "TinyLLaVAGroundVLM built (use_dino=%s, use_lora=%s, siglip=%d, llm=%d,"
+            " first_token_loss_weight=%.2f, train_connector=%s)",
             use_dino, use_lora, siglip_hidden, llm_hidden,
+            self.first_token_loss_weight, self.train_connector,
         )
 
     # ------------------------------------------------------------------
@@ -392,10 +406,9 @@ class TinyLLaVAGroundVLM(nn.Module):
         del text_logits
         shift_labels = labels.contiguous()
 
-        loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)).float(),
-            shift_labels.view(-1),
-            ignore_index=-100,
+        loss = weighted_first_token_ce(
+            shift_logits, shift_labels,
+            first_token_loss_weight=self.first_token_loss_weight,
         )
         return {"loss": loss}
 
@@ -452,6 +465,12 @@ class TinyLLaVAGroundVLM(nn.Module):
                 p.numel() for p in self.dino_adapter.parameters() if p.requires_grad
             )
             components.append(f"DINOAdapter: {adapter_p:,}")
+        connector_p = 0
+        if self.train_connector:
+            connector_p = sum(
+                p.numel() for p in self.connector.parameters() if p.requires_grad
+            )
+            components.append(f"Connector: {connector_p:,}")
         lora_p = 0
         if self.use_lora:
             lora_p = sum(
@@ -459,7 +478,7 @@ class TinyLLaVAGroundVLM(nn.Module):
             )
             components.append(f"LoRA: {lora_p:,}")
         total = sum(p.numel() for p in self.parameters())
-        trainable = adapter_p + lora_p
+        trainable = adapter_p + connector_p + lora_p
         return (
             f"Trainable: {trainable:,} ({100*trainable/max(total,1):.2f}%) | "
             + " | ".join(components)

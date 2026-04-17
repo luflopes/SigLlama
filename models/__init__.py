@@ -24,6 +24,8 @@ def build_model(cfg: dict, *, use_lora: bool | None = None) -> nn.Module:
     backbone = cfg.get("backbone", "paligemma").lower()
     do_lora = cfg.get("use_lora", False) if use_lora is None else use_lora
 
+    first_token_w = float(cfg.get("first_token_loss_weight", 1.0))
+
     if backbone == "paligemma":
         from .face_ground_vlm import FaceGroundVLM
         model = FaceGroundVLM(
@@ -36,6 +38,7 @@ def build_model(cfg: dict, *, use_lora: bool | None = None) -> nn.Module:
             lora_alpha=int(cfg.get("lora_alpha", 32)),
             lora_target_modules=cfg.get("lora_target_modules"),
             lora_dropout=float(cfg.get("lora_dropout", 0.05)),
+            first_token_loss_weight=first_token_w,
         )
         return model
 
@@ -60,6 +63,8 @@ def build_model(cfg: dict, *, use_lora: bool | None = None) -> nn.Module:
             lora_alpha=int(cfg.get("lora_alpha", 32)),
             lora_target_modules=cfg.get("lora_target_modules"),
             lora_dropout=float(cfg.get("lora_dropout", 0.05)),
+            first_token_loss_weight=first_token_w,
+            train_connector=bool(cfg.get("train_connector", False)),
         )
         return model
 
