@@ -72,15 +72,30 @@ _VERDICT_STRINGS = ("Real", "Fake", "real", "fake", " Real", " Fake", " real", "
 def _collect_first_token_ids(tokenizer) -> list[int]:
     """Return the set of first-token ids for any Real/Fake surface form.
 
-    We keep both capitalisations and leading-space variants so SentencePiece
-    / BPE-style tokenizers match either the BOS-adjacent or mid-sentence
-    encoding of the verdict word.
+    We only keep candidates whose tokenisation is **exactly one token**:
+    otherwise forcing the first subtoken (e.g. ``"F"`` from ``"Fake"``) would
+    let the model continue with any suffix (``"F...ine"``) and silently
+    defeat the constraint. Lower/upper-case and leading-space variants are
+    probed so SentencePiece / BPE tokenizers match either the BOS-adjacent
+    or mid-sentence encoding of each verdict word. The downstream parser is
+    case-insensitive, so dropping a capitalised variant that tokenises as
+    multiple pieces costs us nothing — the model can still pick the
+    single-token lowercase form.
     """
     allowed: set[int] = set()
+    dropped: list[tuple[str, int]] = []
     for s in _VERDICT_STRINGS:
         ids = tokenizer.encode(s, add_special_tokens=False)
-        if ids:
+        if len(ids) == 1:
             allowed.add(int(ids[0]))
+        elif ids:
+            dropped.append((s, len(ids)))
+    if dropped:
+        logger.info(
+            "Skipping multi-token verdict candidates (would break the "
+            "constraint): %s",
+            dropped,
+        )
     return sorted(allowed)
 
 
