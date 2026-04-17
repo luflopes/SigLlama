@@ -15,17 +15,18 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 
 import torch
 import yaml
 from tqdm import tqdm
+from transformers import LogitsProcessor, LogitsProcessorList
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from data.ddvqa_dataset import DDVQADataset, collate_ddvqa  # noqa: E402
 from data.prompt_formats import build_generation_inputs  # noqa: E402
+from evaluation.metrics import parse_real_fake, parse_real_fake_legacy  # noqa: E402
 from models import build_model  # noqa: E402
 from training.factory import build_processor_and_transforms  # noqa: E402
 
@@ -49,17 +50,58 @@ def parse_args():
         "--no-repeat-ngram-size", type=int, default=None,
         help="Override generation_config.no_repeat_ngram_size (default: use model's).",
     )
+    p.add_argument(
+        "--constrained-first-token",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Restrict the first generated token to a Real/Fake candidate "
+            "(use --no-constrained-first-token to disable)."
+        ),
+    )
     return p.parse_args()
 
 
-def parse_real_fake(text: str) -> str:
-    t = text.lower().strip()
-    if re.search(r"\breal\b", t):
-        if not re.search(r"\bfake\b", t):
-            return "real"
-    if re.search(r"\bfake\b", t):
-        return "fake"
-    return "fake"
+# ---------------------------------------------------------------------------
+# Layer 3 — constrained decoding
+# ---------------------------------------------------------------------------
+
+_VERDICT_STRINGS = ("Real", "Fake", "real", "fake", " Real", " Fake", " real", " fake")
+
+
+def _collect_first_token_ids(tokenizer) -> list[int]:
+    """Return the set of first-token ids for any Real/Fake surface form.
+
+    We keep both capitalisations and leading-space variants so SentencePiece
+    / BPE-style tokenizers match either the BOS-adjacent or mid-sentence
+    encoding of the verdict word.
+    """
+    allowed: set[int] = set()
+    for s in _VERDICT_STRINGS:
+        ids = tokenizer.encode(s, add_special_tokens=False)
+        if ids:
+            allowed.add(int(ids[0]))
+    return sorted(allowed)
+
+
+class FirstTokenRestrictProcessor(LogitsProcessor):
+    """Force the very first generated token to be in ``allowed_ids``.
+
+    ``generate`` receives a growing ``input_ids`` tensor containing only the
+    tokens produced so far (because we feed the prompt via ``inputs_embeds``).
+    So ``input_ids.shape[-1] == 0`` marks the first generation step.
+    """
+
+    def __init__(self, allowed_ids: list[int]):
+        super().__init__()
+        self.allowed_ids = list(allowed_ids)
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        if input_ids.shape[-1] != 0:
+            return scores
+        mask = torch.full_like(scores, float("-inf"))
+        mask[:, self.allowed_ids] = scores[:, self.allowed_ids]
+        return mask
 
 
 def load_model(cfg: dict, checkpoint_path: str, device: torch.device):
@@ -115,10 +157,31 @@ def main():
     predictions: list[str] = []
     references: list[str] = []
     pred_labels: list[str] = []
+    pred_labels_legacy: list[str] = []
     true_labels: list[str] = []
     per_sample_rows: list[dict] = []
 
     backbone = cfg.get("backbone", "paligemma")
+
+    first_token_processor: LogitsProcessorList | None = None
+    if args.constrained_first_token:
+        allowed_ids = _collect_first_token_ids(tokenizer)
+        if allowed_ids:
+            first_token_processor = LogitsProcessorList(
+                [FirstTokenRestrictProcessor(allowed_ids)]
+            )
+            decoded = {int(i): tokenizer.decode([int(i)]) for i in allowed_ids}
+            logger.info(
+                "Constrained first-token decoding enabled | %d allowed ids: %s",
+                len(allowed_ids),
+                decoded,
+            )
+        else:
+            logger.warning(
+                "Constrained first-token decoding requested but no Real/Fake "
+                "token ids resolved — falling back to unconstrained decoding."
+            )
+
     logger.info("Running inference on %d samples...", len(dataset))
     for batch in tqdm(loader, desc="Evaluating"):
         if batch is None:
@@ -141,6 +204,8 @@ def main():
             gen_overrides["repetition_penalty"] = args.repetition_penalty
         if args.no_repeat_ngram_size is not None:
             gen_overrides["no_repeat_ngram_size"] = args.no_repeat_ngram_size
+        if first_token_processor is not None:
+            gen_overrides["logits_processor"] = first_token_processor
 
         with torch.no_grad():
             gen_ids = model.generate(
@@ -168,10 +233,12 @@ def main():
             gen_str = gen.strip()
             ref_str = ref.strip()
             pred_lbl = parse_real_fake(gen_str)
+            pred_lbl_legacy = parse_real_fake_legacy(gen_str)
 
             predictions.append(gen_str)
             references.append(ref_str)
             pred_labels.append(pred_lbl)
+            pred_labels_legacy.append(pred_lbl_legacy)
             true_labels.append(lbl)
 
             per_sample_rows.append({
@@ -181,7 +248,9 @@ def main():
                 "generated": gen_str,
                 "true_label": lbl,
                 "pred_label": pred_lbl,
+                "pred_label_legacy": pred_lbl_legacy,
                 "correct": pred_lbl == lbl,
+                "correct_legacy": pred_lbl_legacy == lbl,
                 "method": meth,
             })
 
@@ -195,6 +264,7 @@ def main():
     bleu = compute_bleu(predictions, references)
     rouge = compute_rouge(predictions, references)
     detection = compute_detection_f1(pred_labels, true_labels)
+    detection_legacy = compute_detection_f1(pred_labels_legacy, true_labels)
 
     try:
         cider_score = compute_cider(predictions, references)
@@ -207,6 +277,8 @@ def main():
         **rouge,
         "cider": cider_score,
         **detection,
+        "detection_legacy": detection_legacy,
+        "constrained_first_token": bool(first_token_processor is not None),
     }
 
     output_dir = args.output_dir or os.path.join(cfg["output_dir"], "evaluation")
@@ -223,7 +295,9 @@ def main():
     import csv
     predictions_csv = os.path.join(output_dir, "predictions.csv")
     fieldnames = [
-        "image", "method", "true_label", "pred_label", "correct",
+        "image", "method", "true_label",
+        "pred_label", "pred_label_legacy",
+        "correct", "correct_legacy",
         "question", "reference_answer", "generated",
     ]
     with open(predictions_csv, "w", encoding="utf-8", newline="") as f:
@@ -238,7 +312,13 @@ def main():
         predictions_path, len(per_sample_rows), predictions_csv,
     )
     for k, v in sorted(results.items()):
-        logger.info("  %s: %.4f", k, v)
+        if isinstance(v, float):
+            logger.info("  %s: %.4f", k, v)
+        elif isinstance(v, (int, bool, str)):
+            logger.info("  %s: %s", k, v)
+        elif isinstance(v, dict):
+            compact = {kk: (round(vv, 4) if isinstance(vv, float) else vv) for kk, vv in v.items()}
+            logger.info("  %s: %s", k, compact)
 
 
 if __name__ == "__main__":

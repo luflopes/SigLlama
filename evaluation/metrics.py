@@ -153,11 +153,38 @@ def compute_detection_accuracy(
 
 
 def parse_real_fake(text: str) -> str:
-    """Parse model output into 'real' or 'fake' label."""
-    text_lower = text.lower()
-    if re.search(r"\bfake\b", text_lower):
+    """Parse model output into a 'real'/'fake' label.
+
+    The model is trained to open the answer with a verdict token
+    (``Real.`` / ``Fake.``) followed by a justification that very often
+    *mentions* the opposite word (``Real. The eyes look a bit fake ...``).
+    Earlier revisions of this parser returned ``fake`` whenever the word
+    appeared anywhere, which silently flipped correct ``real`` predictions.
+    The current parser uses **first-occurrence** semantics: whichever of
+    ``real``/``fake`` appears *first* (as a whole word) wins.
+    """
+    t = text.lower()
+    fm = re.search(r"\bfake\b", t)
+    rm = re.search(r"\breal\b", t)
+    if fm and rm:
+        return "fake" if fm.start() < rm.start() else "real"
+    if fm:
         return "fake"
-    if re.search(r"\breal\b", text_lower):
+    if rm:
+        return "real"
+    return "unknown"
+
+
+def parse_real_fake_legacy(text: str) -> str:
+    """Legacy ``fake``-anywhere-wins parser kept for A/B comparison.
+
+    Exposed so that ``evaluate.py`` can report both parsings in
+    ``results.json`` without having to re-generate predictions.
+    """
+    t = text.lower()
+    if re.search(r"\bfake\b", t):
+        return "fake"
+    if re.search(r"\breal\b", t):
         return "real"
     return "unknown"
 
