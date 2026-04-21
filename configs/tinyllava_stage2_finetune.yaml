@@ -56,24 +56,29 @@ max_epochs: 5
 batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 8
-# Dataset tem distribuição natural ~80:20 fake:real e o LLM pré-treinado
-# tem viés para responder "Real". Sem rebalancear o gradiente, o caminho
-# de menor resistência é ficar no prior e dizer "Real" em tudo (exatamente
-# o que vimos na avaliação com first-token constrangido). Rebalanceamento
-# + first_token_loss_weight atuam juntos para forçar o aprendizado real.
-balanced_sampling: true
 
-# Layer A — peso extra na CE do *primeiro token válido* da resposta.
-# Em DD-VQA a resposta abre com "Real."/"Fake." (normalizado em
-# DDVQADataset) seguido da justificativa. A CE vanilla dilui essa
-# decisão em ~1% da loss; um α ∈ [5, 10] concentra gradiente na cabeça
-# de classificação sem sacrificar a qualidade do texto gerado.
-first_token_loss_weight: 5.0
+# ---- Run B (Camada B): descongelar o MLP connector ----
+# Run A (balanced_sampling=true + α=5) colapsou em memorização do
+# template "Real" das 506 amostras reais do DD-VQA (over-exposure por
+# balanceamento). O sinal visual do SigLIP+MLP congelados é pouco
+# discriminativo para artefatos de deepfake, então nenhum ajuste de
+# loss/amostragem conseguia compensar. Esta run tenta:
+#
+#  1. Voltar para a distribuição natural 80:20 fake:real -> evita que o
+#     LoRA decore os 506 reais. Com α menor, o modelo recebe muito mais
+#     "Fake." no primeiro token (natural), o que bate de frente com o
+#     prior conversacional do TinyLlama (que tende a "Real").
+#  2. Descongelar o MLP connector com LR baixo para projetar as features
+#     do SigLIP em direções realmente discriminativas (mantendo o
+#     alinhamento multimodal herdado do bczhou/TinyLLaVA-1.5B).
+#  3. first_token_loss_weight=3 — menos agressivo que na Run A, para não
+#     forçar um mínimo local puramente de primeiro-token.
 
-# Layer B (desligada) — descongelar o MLP connector. Ative DEPOIS da
-# Camada A rodar e estabilizar. Se habilitar, usar lr muito baixo para
-# não destruir o alinhamento herdado do TinyLLaVA checkpoint.
-train_connector: false
+balanced_sampling: false
+first_token_loss_weight: 3.0
+
+# Layer B — descongelar o MLP connector (LR 4× menor que o LoRA).
+train_connector: true
 connector_lr: 5.0e-6
 
 # adapter_lr é ignorado (sem DINO adapter), mantido por compatibilidade.
