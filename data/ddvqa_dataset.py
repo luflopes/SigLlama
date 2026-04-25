@@ -130,24 +130,41 @@ class DDVQADataset(Dataset):
         question = row.get("question", "")
         answer = row.get("answer", "")
         image_id = img_rel if img_rel else os.path.basename(img_path)
-        full_text, prefix_text = format_vqa_prompt(question, answer, self.backbone)
+        prefix_text, answer_text = format_vqa_prompt(
+            question, answer, self.backbone,
+        )
 
         pixel_values_siglip = self.image_processor(
             images=img, return_tensors="pt"
         )["pixel_values"].squeeze(0)
 
-        enc = self.tokenizer(
-            full_text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_length,
-        )
-        input_ids = enc["input_ids"].squeeze(0)
-        attention_mask = enc["attention_mask"].squeeze(0)
+        # Two-step tokenisation (prefix WITH specials, answer WITHOUT) so
+        # that ``full_ids[:prefix_len] == prefix_ids`` is guaranteed by
+        # construction. Single-string tokenisation would otherwise fuse
+        # whitespace at the prefix/answer boundary into a different token
+        # sequence, causing ``labels[prefix_len-1]`` to silently mask the
+        # verdict (Real/Fake) we explicitly want supervised.
+        prefix_ids: list[int] = self.tokenizer(
+            prefix_text, add_special_tokens=True,
+        )["input_ids"]
+        answer_ids: list[int] = self.tokenizer(
+            answer_text, add_special_tokens=False,
+        )["input_ids"]
 
-        prefix_enc = self.tokenizer(prefix_text, add_special_tokens=True)
-        prefix_len = len(prefix_enc["input_ids"])
+        full_list = list(prefix_ids) + list(answer_ids)
+        if len(full_list) > self.max_length:
+            full_list = full_list[: self.max_length]
+        prefix_len = min(len(prefix_ids), self.max_length)
+
+        real_len = len(full_list)
+        pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer.eos_token_id or 0
+        full_list = full_list + [pad_id] * (self.max_length - real_len)
+
+        input_ids = torch.tensor(full_list, dtype=torch.long)
+        attention_mask = torch.zeros(self.max_length, dtype=torch.long)
+        attention_mask[:real_len] = 1
 
         labels = input_ids.clone()
         labels[:prefix_len] = -100

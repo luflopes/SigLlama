@@ -63,60 +63,91 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# Layer 3 — constrained decoding
+# Constrained decoding — multi-token verdict prefix
 # ---------------------------------------------------------------------------
+#
+# TinyLlama's SentencePiece vocab includes single-token encodings for
+# ``▁Real`` / ``▁real`` / ``▁fake`` but *not* for ``▁Fake`` (which
+# tokenises as ``[▁F, ake]``). Restricting only the first generated token
+# to a set of single-token verdicts therefore *excluded* "Fake" entirely
+# and the model collapsed onto "Real" via prior. The fix is a small
+# state-machine processor that allows whichever verdict path has been
+# entered and forces the remaining tokens of that path until the verdict
+# is fully emitted.
 
-_VERDICT_STRINGS = ("Real", "Fake", "real", "fake", " Real", " Fake", " real", " fake")
+_VERDICT_SURFACE_FORMS = (" Real", " Fake", " real", " fake")
 
 
-def _collect_first_token_ids(tokenizer) -> list[int]:
-    """Return the set of first-token ids for any Real/Fake surface form.
+def _build_verdict_paths(tokenizer) -> list[list[int]]:
+    """Return the list of token-id sequences spelling out each verdict.
 
-    We only keep candidates whose tokenisation is **exactly one token**:
-    otherwise forcing the first subtoken (e.g. ``"F"`` from ``"Fake"``) would
-    let the model continue with any suffix (``"F...ine"``) and silently
-    defeat the constraint. Lower/upper-case and leading-space variants are
-    probed so SentencePiece / BPE tokenizers match either the BOS-adjacent
-    or mid-sentence encoding of each verdict word. The downstream parser is
-    case-insensitive, so dropping a capitalised variant that tokenises as
-    multiple pieces costs us nothing — the model can still pick the
-    single-token lowercase form.
+    Encoding is done with ``add_special_tokens=False`` and a leading
+    whitespace so the path matches what the model sees during training
+    (where the answer text is `` Real./ Fake.`` after the assistant turn
+    marker). Duplicate paths (e.g. when the slow vs fast tokenizer emit
+    the same ids for two surface forms) are collapsed.
     """
-    allowed: set[int] = set()
-    dropped: list[tuple[str, int]] = []
-    for s in _VERDICT_STRINGS:
+    paths: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for s in _VERDICT_SURFACE_FORMS:
         ids = tokenizer.encode(s, add_special_tokens=False)
-        if len(ids) == 1:
-            allowed.add(int(ids[0]))
-        elif ids:
-            dropped.append((s, len(ids)))
-    if dropped:
-        logger.info(
-            "Skipping multi-token verdict candidates (would break the "
-            "constraint): %s",
-            dropped,
-        )
-    return sorted(allowed)
+        if not ids:
+            continue
+        key = tuple(int(i) for i in ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(list(key))
+    return paths
 
 
-class FirstTokenRestrictProcessor(LogitsProcessor):
-    """Force the very first generated token to be in ``allowed_ids``.
+class VerdictPrefixProcessor(LogitsProcessor):
+    """Force generation to emit one of the verdict id-sequences first.
 
-    ``generate`` receives a growing ``input_ids`` tensor containing only the
-    tokens produced so far (because we feed the prompt via ``inputs_embeds``).
-    So ``input_ids.shape[-1] == 0`` marks the first generation step.
+    Each row is constrained until it has emitted a full verdict path. At
+    every generation step the processor:
+      * looks at the row's already-generated tokens
+      * keeps the verdict paths still consistent with that prefix
+      * if all consistent paths are still incomplete, masks out every
+        token id that isn't the next legal token of any consistent path
+      * if no consistent path exists (path completed or diverged), leaves
+        the row's logits untouched
+
+    Because we feed the prompt via ``inputs_embeds`` to ``generate``, the
+    ``input_ids`` tensor passed to ``__call__`` only contains the tokens
+    produced so far. ``input_ids.shape[-1] == 0`` therefore marks the
+    very first generation step.
     """
 
-    def __init__(self, allowed_ids: list[int]):
+    def __init__(self, verdict_paths: list[list[int]]):
         super().__init__()
-        self.allowed_ids = list(allowed_ids)
+        self.paths: list[tuple[int, ...]] = [tuple(p) for p in verdict_paths if p]
+        self.max_len = max((len(p) for p in self.paths), default=0)
 
     def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        if input_ids.shape[-1] != 0:
+        gen_len = input_ids.shape[-1]
+        if gen_len >= self.max_len:
             return scores
-        mask = torch.full_like(scores, float("-inf"))
-        mask[:, self.allowed_ids] = scores[:, self.allowed_ids]
-        return mask
+
+        out = scores.clone()
+        for b in range(input_ids.shape[0]):
+            if gen_len == 0:
+                allowed = {p[0] for p in self.paths}
+            else:
+                prev = tuple(int(t) for t in input_ids[b, :gen_len].tolist())
+                consistent = [
+                    p for p in self.paths
+                    if len(p) > gen_len and p[:gen_len] == prev
+                ]
+                if not consistent:
+                    continue
+                allowed = {p[gen_len] for p in consistent}
+
+            mask = torch.full_like(out[b], float("-inf"))
+            allowed_t = torch.tensor(sorted(allowed), device=out.device, dtype=torch.long)
+            mask[allowed_t] = out[b, allowed_t]
+            out[b] = mask
+        return out
 
 
 def load_model(cfg: dict, checkpoint_path: str, device: torch.device):
@@ -183,21 +214,29 @@ def main():
 
     first_token_processor: LogitsProcessorList | None = None
     if args.constrained_first_token:
-        allowed_ids = _collect_first_token_ids(tokenizer)
-        if allowed_ids:
+        verdict_paths = _build_verdict_paths(tokenizer)
+        if verdict_paths:
             first_token_processor = LogitsProcessorList(
-                [FirstTokenRestrictProcessor(allowed_ids)]
+                [VerdictPrefixProcessor(verdict_paths)]
             )
-            decoded = {int(i): tokenizer.decode([int(i)]) for i in allowed_ids}
+            paths_dump = [
+                {
+                    "ids": p,
+                    "tokens": tokenizer.convert_ids_to_tokens(p),
+                    "decoded": tokenizer.decode(p),
+                }
+                for p in verdict_paths
+            ]
             logger.info(
-                "Constrained first-token decoding enabled | %d allowed ids: %s",
-                len(allowed_ids),
-                decoded,
+                "Constrained verdict-prefix decoding enabled | %d paths: %s",
+                len(verdict_paths),
+                paths_dump,
             )
         else:
             logger.warning(
-                "Constrained first-token decoding requested but no Real/Fake "
-                "token ids resolved — falling back to unconstrained decoding."
+                "Constrained verdict-prefix decoding requested but no "
+                "Real/Fake token paths resolved — falling back to "
+                "unconstrained decoding."
             )
 
     logger.info("Running inference on %d samples...", len(dataset))

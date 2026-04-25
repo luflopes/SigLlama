@@ -28,31 +28,52 @@ def format_caption_prompt(caption: str, backbone: str) -> str:
 
 
 def format_vqa_prompt(question: str, answer: str, backbone: str) -> tuple[str, str]:
-    """Return ``(full_text, prefix_text)``.
+    """Return ``(prefix_text, answer_text)`` for two-step tokenisation.
 
-    - ``full_text`` is tokenized for ``input_ids`` / ``labels``.
-    - ``prefix_text`` tokens are masked (``labels = -100``) so the loss
-      is only computed on the answer span.
+    The dataset is expected to tokenise ``prefix_text`` with special tokens
+    (BOS) and ``answer_text`` *without* special tokens, then concatenate.
+    This guarantees the answer's first character (the verdict
+    ``Real``/``Fake``) is tokenised in the same context as it would be in
+    a single-string tokenisation, sidestepping the SentencePiece quirk
+    where a trailing space in the prefix produces a lone ``▁`` token that
+    would otherwise consume the verdict's leading-space marker and
+    silently mask it from the labels.
+
+    Concretely:
+
+    - PaliGemma: ``prefix='{question}'``, ``answer='\\n{answer}'``. The
+      newline lives on the answer side so it cannot accidentally merge
+      with the question's last token only when prefix-only tokenisation
+      is computed.
+    - TinyLLaVA: ``prefix='USER: {q} ASSISTANT:'`` (no trailing space),
+      ``answer=' {answer}'`` (leading space). The leading space stays
+      attached to the verdict's first piece (``▁Real`` / ``▁F``) when
+      tokenised with ``add_special_tokens=False``.
     """
     backbone = backbone.lower()
     if backbone == "paligemma":
-        full = f"{question}\n{answer}"
-        prefix = f"{question}\n"
-        return full, prefix
+        prefix = f"{question}"
+        answer_text = f"\n{answer}"
+        return prefix, answer_text
     if backbone == "tinyllava":
-        prefix = f"USER: {question} ASSISTANT: "
-        full = f"{prefix}{answer}"
-        return full, prefix
+        prefix = f"USER: {question} ASSISTANT:"
+        answer_text = f" {answer}"
+        return prefix, answer_text
     raise ValueError(f"Unknown backbone '{backbone}'")
 
 
 def format_vqa_query(question: str, backbone: str) -> str:
-    """Build only the question prefix (for ``generate``)."""
+    """Build only the question prefix (for ``generate``).
+
+    Mirrors :func:`format_vqa_prompt`: the prefix ends right before the
+    separator/leading-space that introduces the answer, so generation
+    starts from the exact context the model saw during training.
+    """
     backbone = backbone.lower()
     if backbone == "paligemma":
-        return f"{question}\n"
+        return f"{question}"
     if backbone == "tinyllava":
-        return f"USER: {question} ASSISTANT: "
+        return f"USER: {question} ASSISTANT:"
     raise ValueError(f"Unknown backbone '{backbone}'")
 
 

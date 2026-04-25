@@ -35,20 +35,17 @@ image_root: "/datasets/deepfake/ddvqa_prepared/frames"
 max_text_length: 256
 
 # --- LoRA ---
-# Rank/alpha e target_modules expandidos p/ superar o prior conversacional
-# do checkpoint bczhou/TinyLLaVA-1.5B (que tende a responder "Real" por
-# default). Sem DINOv2, a LoRA precisa compensar a falta de features de
-# artefatos finos, logo aumentamos a capacidade adaptável (~4x em params).
+# Run C: voltamos para LoRA *só* em q_proj/v_proj (a configuração
+# tradicional). O motivo é que Runs A e B sofreram de um bug de off-by-one
+# nos labels (o token de veredito era mascarado como prefixo) — toda a
+# capacidade extra do LoRA expandido estava sendo aplicada à posição
+# errada. Com os labels corrigidos (ver data/prompt_formats.py +
+# DDVQADataset), só q_proj/v_proj basta para adaptar o classificador.
 lora_rank: 32
 lora_alpha: 64
 lora_target_modules:
   - "q_proj"
-  - "k_proj"
   - "v_proj"
-  - "o_proj"
-  - "gate_proj"
-  - "up_proj"
-  - "down_proj"
 lora_dropout: 0.05
 
 # --- Training ---
@@ -57,25 +54,29 @@ batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 8
 
-# ---- Run B (Camada B): descongelar o MLP connector ----
-# Run A (balanced_sampling=true + α=5) colapsou em memorização do
-# template "Real" das 506 amostras reais do DD-VQA (over-exposure por
-# balanceamento). O sinal visual do SigLIP+MLP congelados é pouco
-# discriminativo para artefatos de deepfake, então nenhum ajuste de
-# loss/amostragem conseguia compensar. Esta run tenta:
+# ---- Run C: labels corrigidos + LoRA enxuto + connector destravado ----
+# Diagnóstico das Runs A/B: o token de veredito (Real/Fake) estava sendo
+# mascarado como parte do prefixo por um off-by-one na tokenização (o
+# espaço final em "ASSISTANT: " virava um token solto "▁" e fundia com
+# o veredito quando o texto completo era tokenizado de uma vez). Isso
+# explicava (a) recall=0 do parser estrito, (b) acurácia=0 mesmo com
+# constrained decoding, e (c) por que aumentar first_token_loss_weight
+# só piorava — o peso ia para o ponto-final, não para o veredito.
 #
-#  1. Voltar para a distribuição natural 80:20 fake:real -> evita que o
-#     LoRA decore os 506 reais. Com α menor, o modelo recebe muito mais
-#     "Fake." no primeiro token (natural), o que bate de frente com o
-#     prior conversacional do TinyLlama (que tende a "Real").
-#  2. Descongelar o MLP connector com LR baixo para projetar as features
-#     do SigLIP em direções realmente discriminativas (mantendo o
-#     alinhamento multimodal herdado do bczhou/TinyLLaVA-1.5B).
-#  3. first_token_loss_weight=3 — menos agressivo que na Run A, para não
-#     forçar um mínimo local puramente de primeiro-token.
+# Esta run aplica:
+#  1. Tokenização em duas etapas (prefix + answer) — fix em
+#     data/prompt_formats.py + data/ddvqa_dataset.py.
+#  2. LoRA reduzido para q_proj/v_proj (capacidade clássica) — agora
+#     que o sinal de classificação chega no token certo, não precisa
+#     de capacidade extra para superar o prior conversacional.
+#  3. first_token_loss_weight=2.0 — peso moderado, agora aplicado ao
+#     token correto (▁Real para reais, ▁F para fakes).
+#  4. Connector permanece descongelado (Layer B), pois ainda precisamos
+#     que o sinal visual ganhe direções discriminativas para deepfake.
+#  5. balanced_sampling=false — distribuição natural 80:20 fake:real.
 
 balanced_sampling: false
-first_token_loss_weight: 3.0
+first_token_loss_weight: 2.0
 
 # Layer B — descongelar o MLP connector (LR 4× menor que o LoRA).
 train_connector: true
@@ -98,4 +99,4 @@ log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/tinyllava_stage2_finetune"
+output_dir: "outputs/tinyllava_stage2_finetune_runc"
