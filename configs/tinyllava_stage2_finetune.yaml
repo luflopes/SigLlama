@@ -52,7 +52,7 @@ lora_dropout: 0.05
 max_epochs: 5
 batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
-num_workers: 8
+num_workers: 2
 
 # ---- Run C: labels corrigidos + LoRA enxuto + connector destravado ----
 # Diagnóstico das Runs A/B: o token de veredito (Real/Fake) estava sendo
