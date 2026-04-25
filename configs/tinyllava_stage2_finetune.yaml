@@ -54,29 +54,30 @@ batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 2
 
-# ---- Run C: labels corrigidos + LoRA enxuto + connector destravado ----
-# Diagnóstico das Runs A/B: o token de veredito (Real/Fake) estava sendo
-# mascarado como parte do prefixo por um off-by-one na tokenização (o
-# espaço final em "ASSISTANT: " virava um token solto "▁" e fundia com
-# o veredito quando o texto completo era tokenizado de uma vez). Isso
-# explicava (a) recall=0 do parser estrito, (b) acurácia=0 mesmo com
-# constrained decoding, e (c) por que aumentar first_token_loss_weight
-# só piorava — o peso ia para o ponto-final, não para o veredito.
+# ---- Run D-2: balanced sampling + first-token weight neutro ----
+# Run C (após o fix de labels) atingiu F1=0.85 com recall_fake=0.98, mas
+# colapsou no prior 80:20: especificidade em reais caiu para 3.8% — o
+# modelo aprendeu a sempre dizer "Fake.". As features visuais SigLIP+MLP
+# (mesmo com connector destravado) não estão suficientemente
+# discriminativas, então a cabeça de classificação otimiza o prior do
+# dataset em vez de condicionar o veredito à imagem.
 #
-# Esta run aplica:
-#  1. Tokenização em duas etapas (prefix + answer) — fix em
-#     data/prompt_formats.py + data/ddvqa_dataset.py.
-#  2. LoRA reduzido para q_proj/v_proj (capacidade clássica) — agora
-#     que o sinal de classificação chega no token certo, não precisa
-#     de capacidade extra para superar o prior conversacional.
-#  3. first_token_loss_weight=2.0 — peso moderado, agora aplicado ao
-#     token correto (▁Real para reais, ▁F para fakes).
-#  4. Connector permanece descongelado (Layer B), pois ainda precisamos
-#     que o sinal visual ganhe direções discriminativas para deepfake.
-#  5. balanced_sampling=false — distribuição natural 80:20 fake:real.
+# Esta run testa se a discriminação melhora quando:
+#  1. balanced_sampling=true — força o modelo a ver real e fake na mesma
+#     proporção, eliminando o sinal de prior 80:20 que sequestrava o
+#     primeiro token. Diferente da Run A (que colapsou no sentido oposto)
+#     porque agora os labels estão corretos: balancear de fato significa
+#     supervisionar ▁Real e ▁F na mesma intensidade.
+#  2. first_token_loss_weight=1.0 — desliga o peso extra. Em Run C o
+#     peso 2.0 sobre o veredito comia o gradiente do corpo (descrição) e
+#     amplificava o prior. Com sampling balanceado, o veredito já recebe
+#     sinal proporcional sem precisar amplificação artificial.
+#
+# Mantemos: train_connector=true (necessário p/ projetar SigLIP em
+# direções deepfake-sensíveis), LoRA enxuto (q/v_proj), labels corretos.
 
-balanced_sampling: false
-first_token_loss_weight: 2.0
+balanced_sampling: true
+first_token_loss_weight: 1.0
 
 # Layer B — descongelar o MLP connector (LR 4× menor que o LoRA).
 train_connector: true
@@ -99,4 +100,4 @@ log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/tinyllava_stage2_finetune_runc"
+output_dir: "outputs/tinyllava_stage2_finetune_rund"

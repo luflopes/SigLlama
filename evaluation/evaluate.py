@@ -39,7 +39,14 @@ def parse_args():
     p.add_argument("--config", required=True)
     p.add_argument("--checkpoint", required=True, help="Checkpoint .pt with adapter + lora")
     p.add_argument("--split", default="val", choices=["val", "test"])
-    p.add_argument("--max-new-tokens", type=int, default=256)
+    p.add_argument(
+        "--max-new-tokens", type=int, default=128,
+        help=(
+            "Hard cap on generated tokens. DD-VQA reference answers have "
+            "p95 ~95 subword tokens, so 128 covers the long tail with "
+            "margin while halving inference time vs. the previous 256."
+        ),
+    )
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--output-dir", default=None)
     p.add_argument(

@@ -151,6 +151,14 @@ class DDVQADataset(Dataset):
             answer_text, add_special_tokens=False,
         )["input_ids"]
 
+        # Append EOS so the model learns to terminate naturally after the
+        # answer instead of running until ``max_new_tokens``. Without this
+        # the loss never supervises the stop signal and inference produces
+        # rambling continuations capped only by the generation budget.
+        eos_id = self.tokenizer.eos_token_id
+        if eos_id is not None and (not answer_ids or answer_ids[-1] != eos_id):
+            answer_ids = list(answer_ids) + [int(eos_id)]
+
         full_list = list(prefix_ids) + list(answer_ids)
         if len(full_list) > self.max_length:
             full_list = full_list[: self.max_length]
