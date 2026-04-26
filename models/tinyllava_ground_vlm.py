@@ -302,14 +302,24 @@ class TinyLLaVAGroundVLM(nn.Module):
         return self.connector(siglip_feats.to(self.connector[0].weight.dtype))
 
     def _encode_dino(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Run DINOv2, drop CLS, project via DINOv2 adapter."""
+        """Run DINOv2, drop CLS, project via DINOv2 adapter.
+
+        The adapter keeps its weights in float32 (master copy for stable
+        gradient updates), but the output must match the LLM embedding
+        dtype (bfloat16) so it concatenates cleanly with text embeddings
+        and feeds bf16 projection weights. Inside an autocast context
+        (training) this cast is a no-op; outside autocast (e.g.
+        ``model.generate()`` in ``maybe_sample``) the cast is required
+        to avoid ``mat1 and mat2 dtype mismatch`` in q_proj.
+        """
         assert self.dinov2 is not None and self.dino_adapter is not None
         with torch.no_grad():
             dino_out = self.dinov2(pixel_values=pixel_values).last_hidden_state
             dino_patches = dino_out[:, 1:, :]  # exclude CLS
-        return self.dino_adapter(
+        proj = self.dino_adapter(
             dino_patches.to(self.dino_adapter.proj.weight.dtype)
         )
+        return proj.to(self._get_embed_tokens().weight.dtype)
 
     def _encode_vision(
         self,

@@ -239,6 +239,10 @@ class FaceGroundVLM(nn.Module):
             dino_patches = dino_out[:, 1:, :]  # exclude CLS
 
         dino_adapted = self.dino_adapter(dino_patches.to(self.dino_adapter.proj.weight.dtype))
+        # Adapter keeps fp32 master weights; cast output to LLM embed
+        # dtype so concatenation and downstream projections work
+        # outside autocast (e.g. during model.generate()).
+        dino_adapted = dino_adapted.to(siglip_proj.dtype)
 
         return self.mof_fn(siglip_proj, dino_adapted)
 

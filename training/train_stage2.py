@@ -410,25 +410,8 @@ def main() -> None:
                             [f"{x:.2e}" for x in lrs],
                         )
 
-                    if (
-                        sample_interval > 0
-                        and global_step % sample_interval == 0
-                        and accelerator.is_main_process
-                    ):
-                        maybe_sample(
-                            model, tokenizer, sample_batch, accelerator,
-                            output_dir, global_step, backbone=backbone,
-                        )
-
-                    if (
-                        val_interval > 0
-                        and global_step % val_interval == 0
-                        and accelerator.is_main_process
-                    ):
-                        vloss = validation_loss(model, val_loader, accelerator)
-                        if vloss is not None:
-                            logger.info("validation loss: %.6f", vloss)
-
+                    # Save BEFORE sampling/validation: a crash in
+                    # generate() must never lose progress.
                     if (
                         save_interval > 0
                         and global_step % save_interval == 0
@@ -449,6 +432,37 @@ def main() -> None:
                         torch.save(state, ckpt_path)
                         logger.info("Saved %s", ckpt_path)
 
+                    if (
+                        val_interval > 0
+                        and global_step % val_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        try:
+                            vloss = validation_loss(model, val_loader, accelerator)
+                            if vloss is not None:
+                                logger.info("validation loss: %.6f", vloss)
+                        except Exception as e:
+                            logger.warning(
+                                "Validation at step %s failed (skipped): %s",
+                                global_step, e,
+                            )
+
+                    if (
+                        sample_interval > 0
+                        and global_step % sample_interval == 0
+                        and accelerator.is_main_process
+                    ):
+                        try:
+                            maybe_sample(
+                                model, tokenizer, sample_batch, accelerator,
+                                output_dir, global_step, backbone=backbone,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Sampling at step %s failed (skipped): %s",
+                                global_step, e,
+                            )
+
         if accelerator.is_main_process and n_batches > 0:
             logger.info(
                 "epoch %s done | mean train loss=%.6f",
@@ -459,13 +473,19 @@ def main() -> None:
         # End-of-epoch fallback: ensures at least one validation + one sample
         # dump per epoch regardless of how val/sample_interval were configured.
         if accelerator.is_main_process:
-            vloss = validation_loss(model, val_loader, accelerator)
-            if vloss is not None:
-                logger.info("[epoch %s end] validation loss: %.6f", epoch, vloss)
-            maybe_sample(
-                model, tokenizer, sample_batch, accelerator,
-                output_dir, global_step, backbone=backbone,
-            )
+            try:
+                vloss = validation_loss(model, val_loader, accelerator)
+                if vloss is not None:
+                    logger.info("[epoch %s end] validation loss: %.6f", epoch, vloss)
+            except Exception as e:
+                logger.warning("End-of-epoch validation failed (skipped): %s", e)
+            try:
+                maybe_sample(
+                    model, tokenizer, sample_batch, accelerator,
+                    output_dir, global_step, backbone=backbone,
+                )
+            except Exception as e:
+                logger.warning("End-of-epoch sampling failed (skipped): %s", e)
 
     if accelerator.is_main_process:
         um = accelerator.unwrap_model(model)
