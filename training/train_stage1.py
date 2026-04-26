@@ -201,13 +201,21 @@ def main() -> None:
     dino_transform = proc["dino_transform"]
 
     model = build_model(cfg, use_lora=False)
-    if cfg.get("gradient_checkpointing", True):
-        model.enable_gradient_checkpointing()
 
     if model.dino_adapter is None:
         raise ValueError(
             "Stage 1 trains the DINOv2 adapter; set use_dino=true in the config."
         )
+
+    # When the entire LLM/SigLIP/DINOv2 stack is frozen and only the
+    # adapter is trainable, the gradient still has to flow *through* the
+    # LLM (frozen) back to inputs_embeds and from there into the adapter.
+    # Gradient checkpointing requires at least one input with
+    # requires_grad=True; ``enable_input_require_grads()`` makes the
+    # embedding output produce gradients so the recompute pass works.
+    model.enable_input_require_grads()
+    if cfg.get("gradient_checkpointing", True):
+        model.enable_gradient_checkpointing()
 
     train_loader, val_loader = build_dataloaders(
         cfg, tokenizer, image_processor, dino_transform,

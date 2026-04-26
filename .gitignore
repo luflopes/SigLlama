@@ -51,3 +51,6 @@ Thumbs.db
 
 # MediaPipe cache
 .cache/
+
+# frames from ddvqa dataset
+ddvqa/

@@ -1,12 +1,14 @@
 # =============================================================
-# Stage 2 (TinyLLaVA) — LoRA only on TinyLlama
+# Stage 2 (TinyLLaVA) — Run E: I-MoF com DINOv2
 # =============================================================
-# Partida direta na Stage 2, SEM DINOv2 (TinyLLaVA puro):
-#   * SigLIP, MLP connector e TinyLlama vêm dos pesos fine-tunados do
-#     bczhou/TinyLLaVA-1.5B (share recipe) e ficam congelados no forward.
-#   * Não há DINOv2 nem adapter — apenas SigLIP (729 tokens) alimenta a LLM.
-#   * Único componente treinado: LoRA em q_proj e v_proj da TinyLlama
-#     (convenção LLaMA).
+# SigLIP-So400m + MLP connector + TinyLlama vêm dos pesos fine-tunados
+# do bczhou/TinyLLaVA-1.5B (share recipe). DINOv2-Large é frozen,
+# carregado direto do facebook/dinov2-large; só o adapter (linear
+# 1024->2048) é treinável. I-MoF interleave funde os 729 tokens de cada
+# stream em 1458 tokens visuais que entram na LLM.
+#
+# Treináveis: LoRA (q_proj/v_proj), MLP connector (LR baixo) e
+# DINOv2 adapter (LR alto, sem Stage 1).
 #
 # Usage:
 #   python training/train_stage2.py --config configs/tinyllava_stage2_finetune.yaml
@@ -19,13 +21,17 @@ tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 siglip_model: "google/siglip-so400m-patch14-384"
 tinyllava_weights: "outputs/tinyllava_weights.pt"
 load_tinyllava_weights: true
-use_dino: false
+use_dino: true
 vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-# --- Stage 1 checkpoint (sem Stage 1 nem DINO adapter) ---
-adapter_checkpoint: null
+# --- Stage 1 checkpoint ---
+# Carrega o adapter DINOv2 pretreinado em LCS-558K (~3 125 optim steps,
+# 1 epoch). Sem isso o adapter sairia random e o I-MoF jogaria tokens
+# DINOv2 ruidosos no LLM nas primeiras milhares de iterações,
+# competindo com (e degradando) o sinal já alinhado do SigLIP.
+adapter_checkpoint: "outputs/tinyllava_stage1_adapter/checkpoint-final.pt"
 lora_checkpoint: null
 
 # --- Data ---
@@ -49,42 +55,45 @@ lora_target_modules:
 lora_dropout: 0.05
 
 # --- Training ---
+# Run E: I-MoF interleave dobra os tokens visuais (729 -> 1458) e adiciona
+# o forward do DINOv2-Large. Dividimos batch_size por 2 e dobramos
+# gradient_accumulation_steps para manter o effective batch em 64 sem
+# estourar a VRAM de 47 GB.
 max_epochs: 5
-batch_size: 32
-gradient_accumulation_steps: 2    # effective batch = 64
+batch_size: 16
+gradient_accumulation_steps: 4    # effective batch = 64
 num_workers: 2
 
-# ---- Run D-2: balanced sampling + first-token weight neutro ----
-# Run C (após o fix de labels) atingiu F1=0.85 com recall_fake=0.98, mas
-# colapsou no prior 80:20: especificidade em reais caiu para 3.8% — o
-# modelo aprendeu a sempre dizer "Fake.". As features visuais SigLIP+MLP
-# (mesmo com connector destravado) não estão suficientemente
-# discriminativas, então a cabeça de classificação otimiza o prior do
-# dataset em vez de condicionar o veredito à imagem.
+# ---- Run E: I-MoF com DINOv2 (Stage 1 pretreinado) ----
+# Run D-2 (sem DINO) atingiu F1=0.69 e specificidade real=72%, mas o
+# recall por método ficou desigual: Deepfakes/FaceSwap 0.65-0.75 vs.
+# NeuralTextures 0.32 e FaceShifter 0.47 — perfil clássico do que
+# SigLIP-So400m (treinado com legendas) deixa escapar: artefatos finos
+# de textura e identidade. DINOv2 SSL captura esses sinais melhor.
 #
-# Esta run testa se a discriminação melhora quando:
-#  1. balanced_sampling=true — força o modelo a ver real e fake na mesma
-#     proporção, eliminando o sinal de prior 80:20 que sequestrava o
-#     primeiro token. Diferente da Run A (que colapsou no sentido oposto)
-#     porque agora os labels estão corretos: balancear de fato significa
-#     supervisionar ▁Real e ▁F na mesma intensidade.
-#  2. first_token_loss_weight=1.0 — desliga o peso extra. Em Run C o
-#     peso 2.0 sobre o veredito comia o gradiente do corpo (descrição) e
-#     amplificava o prior. Com sampling balanceado, o veredito já recebe
-#     sinal proporcional sem precisar amplificação artificial.
-#
-# Mantemos: train_connector=true (necessário p/ projetar SigLIP em
-# direções deepfake-sensíveis), LoRA enxuto (q/v_proj), labels corretos.
+# Pipeline desta run:
+#   1) adapter DINOv2 pretreinado em LCS-558K (Stage 1) — alinhado ao
+#      espaço da TinyLlama, não é mais random init.
+#   2) Stage 2 destrava 3 grupos: adapter (LR baixo, refinamento),
+#      connector (LR baixo, ajuste à presença do novo stream) e LoRA
+#      q/v_proj (LR padrão para a adaptação ao DD-VQA).
+#   3) Mantemos: balanced_sampling=true, first_token_loss_weight=1.0,
+#      labels corrigidos, EOS supervisionado.
 
 balanced_sampling: true
 first_token_loss_weight: 1.0
 
-# Layer B — descongelar o MLP connector (LR 4× menor que o LoRA).
+# MLP connector destravado com LR baixo: deixa o connector se reajustar
+# à entrada do segundo stream visual (DINO via I-MoF) sem apagar a
+# alinhamento herdado do TinyLLaVA share recipe.
 train_connector: true
 connector_lr: 5.0e-6
 
-# adapter_lr é ignorado (sem DINO adapter), mantido por compatibilidade.
-adapter_lr: 1.0e-4
+# Adapter DINOv2 vem pretreinado (Stage 1). LR moderado: refinamento
+# para o domínio deepfake, não convergência do zero. Se fosse random
+# init seria 1.0e-4; com pretrained, 5.0e-5 evita destruir a
+# representação aprendida em LCS-558K.
+adapter_lr: 5.0e-5
 lora_lr: 2.0e-5
 warmup_ratio: 0.03
 max_grad_norm: 1.0
@@ -93,11 +102,13 @@ mixed_precision: "bf16"
 gradient_checkpointing: true
 
 # --- Logging & checkpointing ---
-# DD-VQA: 10 806 train samples, batch_size=32, grad_accum=2 -> ~169 optim steps
-# por época (845 steps em 5 épocas). Intervalos dimensionados para essa escala;
-# fallback garante 1 validação + 1 sample ao final de cada época.
+# DD-VQA: 10 806 train samples. WeightedRandomSampler usa
+# num_samples=len(weights) com replacement, então cada época passa por
+# ~10 806 amostras (com proporção real/fake balanceada 50/50). Com
+# batch_size=16 e grad_accum=4: ~169 optim steps/época × 5 épocas
+# = ~845 optim steps totais (mesmo schedule de Run D).
 log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/tinyllava_stage2_finetune_rund"
+output_dir: "outputs/tinyllava_stage2_finetune_rune"
