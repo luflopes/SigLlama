@@ -37,6 +37,7 @@ lora_checkpoint: null
 # --- Data ---
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
 val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/test.jsonl"
 image_root: "/datasets/deepfake/ddvqa_prepared/frames"
 max_text_length: 256
 
