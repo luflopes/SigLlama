@@ -228,6 +228,30 @@ def load_lora_checkpoint(model, path: str) -> None:
     set_peft_model_state_dict(model.language_model, lora_sd)
 
 
+def load_connector_checkpoint(model, path: str) -> None:
+    """Load the MLP connector from a previous-stage checkpoint.
+
+    The Stage 2 checkpoint dict stores the connector under the key
+    ``"connector"`` when the previous run had ``train_connector=true``.
+    Without this hook, Stage 3 would silently fall back to the
+    TinyLLaVA base connector and lose the deepfake-domain adaptation
+    learned in Stage 2 (Run E).
+    """
+    if not hasattr(model, "connector"):
+        logger.info("Model has no connector; skipping connector load")
+        return
+    ckpt = torch.load(path, map_location="cpu")
+    if not isinstance(ckpt, dict) or "connector" not in ckpt:
+        logger.warning(
+            "connector_checkpoint=%s has no 'connector' key; skipping. "
+            "Was the previous stage trained with train_connector=true?",
+            path,
+        )
+        return
+    model.connector.load_state_dict(ckpt["connector"])
+    logger.info("Connector loaded from %s", path)
+
+
 def main() -> None:
     logging.basicConfig(
         format="%(asctime)s | %(levelname)s | %(message)s",
@@ -264,6 +288,12 @@ def main() -> None:
         load_adapter_checkpoint(model, cfg["adapter_checkpoint"])
     if cfg.get("lora_checkpoint"):
         load_lora_checkpoint(model, cfg["lora_checkpoint"])
+    # Connector checkpoint may be inside the same file as lora/adapter
+    # (Stage 2 saves them together). Default to lora_checkpoint when
+    # connector_checkpoint is not explicitly set.
+    connector_ckpt = cfg.get("connector_checkpoint") or cfg.get("lora_checkpoint")
+    if connector_ckpt:
+        load_connector_checkpoint(model, connector_ckpt)
 
     train_loader, val_loader = build_dataloaders(
         cfg, tokenizer, image_processor, dino_transform,

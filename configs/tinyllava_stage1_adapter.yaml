@@ -37,21 +37,31 @@ connector_hidden_dim: 2048
 image_size: 384
 
 # --- Data ---
-# LCS-558K: 558 128 captions BLIP em pares imagem-texto. Sub-amostragem
-# para 200k cobre 1 epoch típica para adapter (LLaVA usa 558k em 1 epoch
-# com adapter ~10M; nosso adapter é ~2M, então 200k já é folgado).
+# LCS-558K completo (558 128 pares BLIP imagem-texto). Sub-amostragem
+# desabilitada para maximizar a diversidade que o adapter vê.
 metadata_path: "/datasets/deepfake/lcs-558k/blip_laion_cc_sbu_558k_meta.json"
 image_root: "/datasets/deepfake/lcs-558k"
 max_text_length: 128
-max_train_samples: 200000
+max_train_samples: null
 val_size: 1000
 
 # --- Training ---
-# I-MoF dobra os tokens visuais (729 -> 1458). Como o gradiente flui pelo
-# LLM frozen mas com gradient_checkpointing, podemos manter batch=32
-# sem estourar VRAM (LLM activations são recomputadas). DINOv2-Large no
-# forward roda em no_grad, libera ativações imediatamente.
-max_epochs: 1
+# Pipeline pesado: I-MoF interleave dobra tokens visuais (729 -> 1458),
+# DINOv2-Large roda forward (no_grad), TinyLlama frozen (gradient_checkpointing).
+# Throughput observado anteriormente: ~7s/it com batch=32 e grad_accum=2.
+#
+# Custo estimado: 558 128 / 32 = 17 442 batches/épocas x 5 épocas = 87 210
+# batches × 7s = ~170h (~7 dias). Considere:
+#   - aumentar batch_size para 64 (LLM frozen, ativações recomputadas via
+#     gradient_checkpointing -> tem folga de VRAM). Pode reduzir para
+#     ~4-5 dias se o IO/DINO não for gargalo.
+#   - reduzir max_epochs para 2-3 se a val_loss saturar antes (geralmente
+#     adapter linear converge bem rápido em LCS-558K).
+# 5 épocas × 558k = 2.79M passes = 28x mais sinal que a Stage 1 anterior
+# (1 epoch × 200k = 200k passes). Esperado: adapter mais discriminativo,
+# especialmente para artefatos finos que diferenciam NeuralTextures e
+# FaceShifter (gargalos identificados em Run E).
+max_epochs: 5
 batch_size: 32
 gradient_accumulation_steps: 2    # effective batch = 64
 num_workers: 8
@@ -67,9 +77,12 @@ mixed_precision: "bf16"
 gradient_checkpointing: true
 
 # --- Logging & checkpointing ---
-# 200k samples / batch=32 / grad_accum=2 = ~3125 optim steps em 1 epoch.
-log_interval: 50
-save_interval: 500
-val_interval: 500
-sample_interval: 1000
-output_dir: "outputs/tinyllava_stage1_adapter"
+# 558 128 samples / batch=32 / grad_accum=2 = ~8721 optim steps/épocas
+# x 5 épocas = ~43 605 optim steps totais. Intervalos escalados para
+# manter granularidade de monitoramento sem inundar o disco com checkpoints
+# (cada um ocupa ~10MB só do adapter, mas optimizer + scheduler somam mais).
+log_interval: 200
+save_interval: 2000
+val_interval: 2000
+sample_interval: 4000
+output_dir: "outputs/tinyllava_stage1_adapter_full"

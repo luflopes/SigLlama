@@ -1,9 +1,27 @@
 # =============================================================
-# Stage 3 (TinyLLaVA) — Fine-tuning with textual [y1,x1,y2,x2] bboxes
+# Stage 3 (TinyLLaVA) — Localization fine-tune sobre Run E
 # =============================================================
-# Continues from Stage 2 checkpoint on enriched DD-VQA annotations that
-# include facial-region bounding boxes as plain text. No new tokens are
-# added to the vocabulary.
+# Continua do checkpoint final do Run E (Stage 2 com DINO + I-MoF) e
+# treina nas anotações enriquecidas com [y1,x1,y2,x2] que aterram a
+# explicação a regiões faciais reais.
+#
+# As anotações enriquecidas vêm de scripts/create_loc_annotations.py
+# (versão content-aware): a bbox é injetada logo após cada região
+# mencionada no texto (eyes, eyebrows, mouth, nose, jawline, etc.) e
+# regiões questionadas mas não citadas na resposta recebem cláusula
+# de grounding adicional. O texto original é preservado.
+#
+# Pipeline esperado para gerar os dados:
+#   python scripts/extract_landmarks.py \
+#     --frames-dir /datasets/deepfake/ddvqa_prepared/frames \
+#     --output /datasets/deepfake/ddvqa_prepared/landmarks.jsonl
+#
+#   for split in train val test; do
+#     python scripts/create_loc_annotations.py \
+#       --ddvqa-jsonl /datasets/deepfake/ddvqa_prepared/${split}.jsonl \
+#       --landmarks-jsonl /datasets/deepfake/ddvqa_prepared/landmarks.jsonl \
+#       --output /datasets/deepfake/ddvqa_prepared/${split}_loc.jsonl
+#   done
 #
 # Usage:
 #   python training/train_stage2.py --config configs/tinyllava_stage3_loc.yaml
@@ -23,31 +41,50 @@ vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-# --- Stage 2 checkpoint ---
-adapter_checkpoint: "outputs/tinyllava_stage2_finetune/checkpoint-final.pt"
-lora_checkpoint: "outputs/tinyllava_stage2_finetune/checkpoint-final.pt"
+# --- Run E checkpoint ---
+# Mesmo arquivo de checkpoint contém adapter (DINOv2) e LoRA. O
+# train_stage2.py também recarrega o connector se ele estiver no
+# checkpoint (Run E foi treinado com train_connector=true).
+adapter_checkpoint: "outputs/tinyllava_stage2_finetune_rune/checkpoint-final.pt"
+lora_checkpoint: "outputs/tinyllava_stage2_finetune_rune/checkpoint-final.pt"
 
 # --- Data (enriched with [y1,x1,y2,x2]) ---
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train_loc.jsonl"
 val_metadata: "/datasets/deepfake/ddvqa_prepared/val_loc.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/test_loc.jsonl"
 image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+# Respostas enriquecidas ficam ~30-50% maiores (cada bbox = ~14 chars +
+# cláusulas extras de grounding). 384 cobre p95 com folga.
 max_text_length: 384
 
-# --- LoRA ---
-lora_rank: 16
-lora_alpha: 32
+# --- LoRA (mesmo formato do Run E para preservar adaptação prévia) ---
+lora_rank: 32
+lora_alpha: 64
 lora_target_modules: ["q_proj", "v_proj"]
 lora_dropout: 0.05
 
 # --- Training ---
+# DD-VQA enriquecido tem mesmo número de samples mas sequência mais
+# longa. batch=16 + grad_accum=4 mantém effective batch=64 e dá folga
+# de VRAM para max_text_length=384.
 max_epochs: 5
-batch_size: 32
-gradient_accumulation_steps: 2
-num_workers: 8
-balanced_sampling: true
+batch_size: 16
+gradient_accumulation_steps: 4    # effective batch = 64
+num_workers: 2
 
-adapter_lr: 5.0e-5
-lora_lr: 1.0e-5
+balanced_sampling: true
+first_token_loss_weight: 1.0
+
+# Connector destravado (continua o que Run E fez); o sinal de bbox
+# pode requerer pequenos reajustes no espaço visual.
+train_connector: true
+connector_lr: 5.0e-6
+
+# Adapter já adaptado em Run E -> LR ainda mais baixo. O foco da
+# Stage 3 é a LLM aprender a EMITIR bboxes nas posições certas, não
+# repensar features visuais.
+adapter_lr: 2.0e-5
+lora_lr: 2.0e-5
 warmup_ratio: 0.03
 max_grad_norm: 1.0
 
@@ -55,8 +92,10 @@ mixed_precision: "bf16"
 gradient_checkpointing: true
 
 # --- Logging & checkpointing ---
-log_interval: 50
-save_interval: 500
-val_interval: 500
-sample_interval: 1000
-output_dir: "outputs/tinyllava_stage3_loc"
+# DD-VQA: 10 806 train samples / batch=16 / grad_accum=4 = ~169
+# optim steps/époc x 5 épocas = ~845 optim steps totais.
+log_interval: 20
+save_interval: 200
+val_interval: 100
+sample_interval: 100
+output_dir: "outputs/tinyllava_stage3_loc_rune"
