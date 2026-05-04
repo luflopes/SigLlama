@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""Prepare the DD-VQA dataset from FaceForensics++ videos.
+"""Prepare the DD-VQA dataset for training.
 
-Pipeline:
-  1. Walk FF++ video directories for each manipulation method
-  2. Extract the middle frame from each video
-  3. Detect and crop the largest face (via YOLO or simple heuristic)
-  4. Merge with DD-VQA annotation JSONs
-  5. Write a flat JSONL metadata ready for training
+Two modes of operation:
 
-Expected FF++ layout (after download with c23 compression)::
+**Mode A – Original author frames (recommended)**:
+  Uses the exact face-cropped frames provided by the DD-VQA paper authors,
+  guaranteeing pixel-perfect alignment with the human annotations.
 
-    <ff_root>/
-      original_sequences/youtube/c23/videos/000.mp4 ...
-      manipulated_sequences/Deepfakes/c23/videos/000_003.mp4 ...
-      manipulated_sequences/Face2Face/c23/videos/...
-      manipulated_sequences/FaceSwap/c23/videos/...
-      manipulated_sequences/FaceShifter/c23/videos/...
-      manipulated_sequences/NeuralTextures/c23/videos/...
+  Usage::
+
+      python scripts/prepare_ddvqa.py \\
+          --ddvqa-root /datasets/deepfake/Research-DD-VQA \\
+          --output-dir /datasets/deepfake/ddvqa_prepared \\
+          --original-frames /path/to/ddvqa_frames
+
+**Mode B – Extract from FF++ videos (legacy)**:
+  Extracts the middle frame from each FF++ video and crops the largest
+  face via Haar cascade.  Frame may NOT match what annotators saw.
+
+  Usage::
+
+      python scripts/prepare_ddvqa.py \\
+          --ff-root /datasets/deepfake/faceforensics \\
+          --ddvqa-root /datasets/deepfake/Research-DD-VQA \\
+          --output-dir /datasets/deepfake/ddvqa_prepared \\
+          --compression c23
 
 Expected DD-VQA layout (clone of Research-DD-VQA)::
 
@@ -26,13 +34,12 @@ Expected DD-VQA layout (clone of Research-DD-VQA)::
       DQ_FF++/split/val.json
       DQ_FF++/split/test.json
 
-Usage::
+Original author frames layout::
 
-    python scripts/prepare_ddvqa.py \\
-        --ff-root /datasets/deepfake/faceforensics \\
-        --ddvqa-root /datasets/deepfake/Research-DD-VQA \\
-        --output-dir /datasets/deepfake/ddvqa_prepared \\
-        --compression c23
+    <original-frames>/
+      0_135_880.jpg      # {manip_id}_{video_id}.jpg
+      5_000.jpg
+      ...
 """
 from __future__ import annotations
 
@@ -40,10 +47,10 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
-import cv2
 from tqdm import tqdm
 
 logging.basicConfig(
@@ -72,9 +79,12 @@ METHOD_TO_FF_PATH = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Prepare DD-VQA dataset")
-    p.add_argument("--ff-root", required=True, help="FaceForensics++ root dir")
     p.add_argument("--ddvqa-root", required=True, help="Research-DD-VQA repo root")
     p.add_argument("--output-dir", required=True, help="Output dir for frames + metadata")
+    p.add_argument("--original-frames", default=None,
+                    help="Path to author-provided frames ({manip_id}_{video_id}.jpg). "
+                         "When set, frames are copied from here instead of extracting from FF++ videos.")
+    p.add_argument("--ff-root", default=None, help="FaceForensics++ root dir (only needed without --original-frames)")
     p.add_argument("--compression", default="c23", choices=["raw", "c23", "c40"])
     p.add_argument("--num-frames", type=int, default=1,
                     help="Frames to extract per video (sampled evenly)")
@@ -82,7 +92,10 @@ def parse_args() -> argparse.Namespace:
                     help="Margin around detected face (fraction of bbox size)")
     p.add_argument("--skip-existing", action="store_true",
                     help="Skip videos whose frames already exist")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.original_frames is None and args.ff_root is None:
+        p.error("Either --original-frames or --ff-root must be provided")
+    return args
 
 
 def extract_frames(video_path: str, num_frames: int = 1) -> list:
@@ -165,14 +178,79 @@ def parse_ddvqa_key(key: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _provision_original_frame(
+    ddvqa_key: str, frames_dir: str, original_frames_dir: str
+) -> str | None:
+    """Copy an author-provided frame into the output frames dir.
+
+    Author frames are named ``{ddvqa_key}.jpg`` (e.g. ``0_135_880.jpg``).
+    We rename to ``{Method}_{video_id}.jpg`` for consistency with the rest
+    of the pipeline.
+    """
+    manip_id, video_id = parse_ddvqa_key(ddvqa_key)
+    method = MANIP_ID_TO_METHOD.get(manip_id)
+    if method is None:
+        return None
+
+    src = os.path.join(original_frames_dir, f"{ddvqa_key}.jpg")
+    if not os.path.isfile(src):
+        return None
+
+    dst_name = f"{method}_{video_id}.jpg"
+    dst = os.path.join(frames_dir, dst_name)
+    if not os.path.isfile(dst):
+        shutil.copy2(src, dst)
+    return dst_name
+
+
+def _provision_extracted_frame(
+    ddvqa_key: str,
+    frames_dir: str,
+    ff_root: str,
+    compression: str,
+    num_frames: int,
+    face_margin: float,
+) -> str | None:
+    """Extract a frame from the FF++ video (legacy mode)."""
+    import cv2  # lazy import – only needed in legacy mode
+
+    manip_id, video_id = parse_ddvqa_key(ddvqa_key)
+    method = MANIP_ID_TO_METHOD.get(manip_id)
+    if method is None:
+        return None
+
+    dst_name = f"{method}_{video_id}.jpg"
+    dst = os.path.join(frames_dir, dst_name)
+    if os.path.isfile(dst):
+        return dst_name
+
+    video_path = resolve_video_path(ff_root, method, video_id, compression)
+    if video_path is None:
+        return None
+
+    extracted = extract_frames(video_path, num_frames)
+    if not extracted:
+        return None
+
+    _, frame = extracted[0]
+    face_crop = crop_face_simple(frame, margin=face_margin)
+    cv2.imwrite(dst, face_crop)
+    return dst_name
+
+
 def main() -> None:
     args = parse_args()
-    ff_root = args.ff_root
     ddvqa_root = args.ddvqa_root
     output_dir = args.output_dir
+    use_original = args.original_frames is not None
 
     frames_dir = os.path.join(output_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
+
+    if use_original:
+        logger.info("Using author-provided frames from: %s", args.original_frames)
+    else:
+        logger.info("Extracting frames from FF++ videos at: %s", args.ff_root)
 
     # Load DD-VQA annotations
     annot_path = os.path.join(ddvqa_root, "DQ_FF++", "total.json")
@@ -221,24 +299,19 @@ def main() -> None:
             skipped += 1
             continue
 
-        frame_filename = f"{method}_{video_id}.jpg"
-        frame_path = os.path.join(frames_dir, frame_filename)
+        if use_original:
+            frame_filename = _provision_original_frame(
+                ddvqa_key, frames_dir, args.original_frames
+            )
+        else:
+            frame_filename = _provision_extracted_frame(
+                ddvqa_key, frames_dir, args.ff_root,
+                args.compression, args.num_frames, args.face_margin,
+            )
 
-        # Extract frame if needed
-        if not os.path.isfile(frame_path) or not args.skip_existing:
-            video_path = resolve_video_path(ff_root, method, video_id, args.compression)
-            if video_path is None:
-                skipped += 1
-                continue
-
-            extracted = extract_frames(video_path, args.num_frames)
-            if not extracted:
-                skipped += 1
-                continue
-
-            _, frame = extracted[0]
-            face_crop = crop_face_simple(frame, margin=args.face_margin)
-            cv2.imwrite(frame_path, face_crop)
+        if frame_filename is None:
+            skipped += 1
+            continue
 
         is_real = method == "Original"
         split = get_split(video_id)

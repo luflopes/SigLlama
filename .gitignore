@@ -54,3 +54,4 @@ Thumbs.db
 
 # frames from ddvqa dataset
 ddvqa/
+ddvqa_frames/
