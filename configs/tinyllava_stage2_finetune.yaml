@@ -31,7 +31,7 @@ image_size: 384
 # 1 epoch). Sem isso o adapter sairia random e o I-MoF jogaria tokens
 # DINOv2 ruidosos no LLM nas primeiras milhares de iterações,
 # competindo com (e degradando) o sinal já alinhado do SigLIP.
-adapter_checkpoint: "outputs/tinyllava_stage1_adapter/checkpoint-final.pt"
+adapter_checkpoint: "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt"
 lora_checkpoint: null
 
 # --- Data ---
