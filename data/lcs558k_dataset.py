@@ -89,15 +89,26 @@ class LCS558KDataset(Dataset):
             images=img, return_tensors="pt"
         )["pixel_values"].squeeze(0)
 
-        enc = self.tokenizer(
-            text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_length,
-        )
-        input_ids = enc["input_ids"].squeeze(0)
-        attention_mask = enc["attention_mask"].squeeze(0)
+        token_ids: list[int] = self.tokenizer(
+            text, add_special_tokens=True,
+        )["input_ids"]
+
+        eos_id = self.tokenizer.eos_token_id
+        if eos_id is not None and (not token_ids or token_ids[-1] != eos_id):
+            token_ids.append(int(eos_id))
+
+        if len(token_ids) > self.max_length:
+            token_ids = token_ids[: self.max_length]
+
+        real_len = len(token_ids)
+        pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = eos_id or 0
+        token_ids = token_ids + [pad_id] * (self.max_length - real_len)
+
+        input_ids = torch.tensor(token_ids, dtype=torch.long)
+        attention_mask = torch.zeros(self.max_length, dtype=torch.long)
+        attention_mask[:real_len] = 1
 
         labels = input_ids.clone()
         labels[attention_mask == 0] = -100

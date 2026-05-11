@@ -55,3 +55,4 @@ Thumbs.db
 # frames from ddvqa dataset
 ddvqa/
 ddvqa_frames/
+total.json
