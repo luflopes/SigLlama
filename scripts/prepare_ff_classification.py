@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare the FaceForensics++ dataset for DINOv2 binary classification.
 
-Extracts one face-cropped frame per video for every method (Original +
-manipulations) and generates a JSONL metadata file with train/val/test
+Extracts face-cropped frames per video for every method (Original +
+manipulations) and generates JSONL metadata files with train/val/test
 splits that respect the official FF++ split lists.
 
 Usage::
@@ -10,17 +10,21 @@ Usage::
     python scripts/prepare_ff_classification.py \
         --ff-root /datasets/deepfake/faceforensics \
         --output-dir /datasets/deepfake/ff_classification \
-        --compression c23
+        --compression c23 \
+        --splits-dir /datasets/deepfake/Research-DD-VQA/DQ_FF++/split
 
-The ``--ddvqa-test-ids`` flag accepts a path to a newline-delimited file
-of video IDs.  Any video present in that file is **excluded** from the
-classifier's train/val sets to prevent leakage into DD-VQA evaluation.
+The ``--splits-dir`` flag points to a directory containing
+train.json / val.json / test.json — the FF++ official splits stored as
+lists of [video_id, video_id] pairs.  Using the **same** split directory
+as DD-VQA (``DQ_FF++/split/``) guarantees that the classifier's
+train/val/test partition is identical to the one used by the VQA dataset,
+preventing any information leakage.
 
 Output layout::
 
     <output-dir>/
-      frames/Original_000.jpg
-      frames/Deepfakes_135_880.jpg
+      frames/Original_000_f00.jpg
+      frames/Deepfakes_135_880_f00.jpg
       ...
       train.jsonl
       val.jsonl
@@ -63,8 +67,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", required=True, help="Output dir for frames + metadata")
     p.add_argument("--compression", default="c23", choices=["raw", "c23", "c40"])
     p.add_argument(
-        "--ddvqa-test-ids", default=None,
-        help="Path to file with DD-VQA test video IDs (one per line) to exclude from train/val",
+        "--splits-dir", default=None,
+        help=(
+            "Directory containing train.json/val.json/test.json split files. "
+            "These are the FF++ official splits (lists of video-ID pairs). "
+            "Use the same dir as DD-VQA to guarantee no leakage: "
+            "e.g. /datasets/deepfake/Research-DD-VQA/DQ_FF++/split. "
+            "Falls back to <ff-root>/splits/ if not provided."
+        ),
     )
     p.add_argument("--num-frames", type=int, default=30,
                     help="Number of frames to extract per video (evenly spaced)")
@@ -124,12 +134,14 @@ def crop_face_simple(frame, margin: float = 0.3):
     return frame[y1:y2, x1:x2]
 
 
-def load_ff_splits(ff_root: str) -> dict[str, set[str]]:
-    """Load official FF++ train/val/test splits (JSON lists of video-ID pairs).
+def load_ff_splits(splits_dir: str) -> dict[str, set[str]]:
+    """Load FF++ train/val/test splits (JSON lists of video-ID pairs).
+
+    The split files are typically lists of pairs: [[id1, id2], [id3, id4], ...]
+    Each individual ID is added to the corresponding split set.
 
     Returns a dict mapping split name -> set of individual video IDs.
     """
-    split_dir = os.path.join(ff_root, "splits")
     mapping: dict[str, set[str]] = {"train": set(), "val": set(), "test": set()}
     split_files = {
         "train": "train.json",
@@ -137,15 +149,18 @@ def load_ff_splits(ff_root: str) -> dict[str, set[str]]:
         "test": "test.json",
     }
     for split_name, fname in split_files.items():
-        fpath = os.path.join(split_dir, fname)
+        fpath = os.path.join(splits_dir, fname)
         if not os.path.isfile(fpath):
             logger.warning("Split file not found: %s", fpath)
             continue
         with open(fpath) as f:
             pairs = json.load(f)
         for pair in pairs:
-            for vid in pair:
-                mapping[split_name].add(str(vid))
+            if isinstance(pair, list):
+                for vid in pair:
+                    mapping[split_name].add(str(vid))
+            else:
+                mapping[split_name].add(str(pair))
     for s, ids in mapping.items():
         logger.info("FF++ split '%s': %d video IDs", s, len(ids))
     return mapping
@@ -166,16 +181,27 @@ def main() -> None:
     frames_dir = os.path.join(output_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
-    ff_splits = load_ff_splits(ff_root)
+    # Determine splits directory
+    splits_dir = args.splits_dir
+    if splits_dir is None:
+        splits_dir = os.path.join(ff_root, "splits")
+    if not os.path.isdir(splits_dir):
+        logger.error(
+            "Splits directory not found: %s. "
+            "Please provide --splits-dir pointing to the directory with "
+            "train.json/val.json/test.json (e.g. the DD-VQA DQ_FF++/split dir).",
+            splits_dir,
+        )
+        sys.exit(1)
 
-    ddvqa_test_ids: set[str] = set()
-    if args.ddvqa_test_ids:
-        with open(args.ddvqa_test_ids) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    ddvqa_test_ids.add(line)
-        logger.info("Loaded %d DD-VQA test video IDs to exclude from train/val", len(ddvqa_test_ids))
+    ff_splits = load_ff_splits(splits_dir)
+
+    total_ids = sum(len(v) for v in ff_splits.values())
+    if total_ids == 0:
+        logger.error(
+            "No video IDs loaded from splits. Check the contents of %s", splits_dir
+        )
+        sys.exit(1)
 
     all_samples: list[dict] = []
     total_skipped = 0
@@ -197,10 +223,19 @@ def main() -> None:
 
         for vfile in tqdm(videos, desc=method_name, leave=False):
             video_id = os.path.splitext(vfile)[0]
-            base_vid = video_id.split("_")[0]
-            split = video_id_to_split(base_vid, ff_splits)
+            # For fake videos like "135_880", both IDs may be in splits.
+            # For originals like "000", just use the ID directly.
+            # We check each part of underscore-split IDs against the splits.
+            parts = video_id.split("_")
+            split = None
+            for part in parts:
+                s = video_id_to_split(part, ff_splits)
+                if s != "train" or part in ff_splits["train"]:
+                    split = s
+                    break
+            if split is None:
+                split = "train"
 
-            # Check if frames for this video already exist (skip_existing)
             first_frame_name = f"{method_name}_{video_id}_f00.jpg"
             if args.skip_existing and os.path.isfile(os.path.join(frames_dir, first_frame_name)):
                 for fi in range(args.num_frames):
@@ -241,13 +276,6 @@ def main() -> None:
         "Extracted %d samples total (skipped %d videos)",
         len(all_samples), total_skipped,
     )
-
-    # Enforce DD-VQA test leakage prevention
-    if ddvqa_test_ids:
-        for s in all_samples:
-            base_vid = s["video_id"].split("_")[0]
-            if base_vid in ddvqa_test_ids and s["split"] != "test":
-                s["split"] = "test"
 
     for split_name in ("train", "val", "test"):
         split_samples = [s for s in all_samples if s["split"] == split_name]
