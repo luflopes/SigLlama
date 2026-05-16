@@ -66,24 +66,42 @@ def parse_args() -> argparse.Namespace:
         "--ddvqa-test-ids", default=None,
         help="Path to file with DD-VQA test video IDs (one per line) to exclude from train/val",
     )
+    p.add_argument("--num-frames", type=int, default=30,
+                    help="Number of frames to extract per video (evenly spaced)")
     p.add_argument("--face-margin", type=float, default=0.3)
     p.add_argument("--skip-existing", action="store_true")
     return p.parse_args()
 
 
-def extract_middle_frame(video_path: str):
-    """Extract the middle frame from a video. Returns BGR numpy array or None."""
+def extract_frames(video_path: str, num_frames: int = 30) -> list[tuple[int, any]]:
+    """Extract evenly-spaced frames from a video.
+
+    Returns a list of (frame_index, BGR numpy array) tuples.
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        return None
+        return []
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total <= 0:
         cap.release()
-        return None
-    cap.set(cv2.CAP_PROP_POS_FRAMES, total // 2)
-    ret, frame = cap.read()
+        return []
+
+    n = min(num_frames, total)
+    if n == 1:
+        indices = [total // 2]
+    else:
+        step = max(total / (n + 1), 1)
+        indices = [int(step * (i + 1)) for i in range(n)]
+        indices = [min(idx, total - 1) for idx in indices]
+
+    frames = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            frames.append((idx, frame))
     cap.release()
-    return frame if ret else None
+    return frames
 
 
 def crop_face_simple(frame, margin: float = 0.3):
@@ -179,33 +197,45 @@ def main() -> None:
 
         for vfile in tqdm(videos, desc=method_name, leave=False):
             video_id = os.path.splitext(vfile)[0]
-            frame_name = f"{method_name}_{video_id}.jpg"
-            frame_path = os.path.join(frames_dir, frame_name)
-
-            if args.skip_existing and os.path.isfile(frame_path):
-                pass
-            else:
-                vpath = os.path.join(video_dir, vfile)
-                frame = extract_middle_frame(vpath)
-                if frame is None:
-                    total_skipped += 1
-                    continue
-                face = crop_face_simple(frame, margin=args.face_margin)
-                cv2.imwrite(frame_path, face)
-
-            # For manipulated videos, the ID may be "135_880"; pick the
-            # first component to look up the FF++ split.
             base_vid = video_id.split("_")[0]
             split = video_id_to_split(base_vid, ff_splits)
 
-            all_samples.append({
-                "image": frame_name,
-                "label": label,
-                "is_real": is_real,
-                "method": method_name,
-                "video_id": video_id,
-                "split": split,
-            })
+            # Check if frames for this video already exist (skip_existing)
+            first_frame_name = f"{method_name}_{video_id}_f00.jpg"
+            if args.skip_existing and os.path.isfile(os.path.join(frames_dir, first_frame_name)):
+                for fi in range(args.num_frames):
+                    fname = f"{method_name}_{video_id}_f{fi:02d}.jpg"
+                    if os.path.isfile(os.path.join(frames_dir, fname)):
+                        all_samples.append({
+                            "image": fname,
+                            "label": label,
+                            "is_real": is_real,
+                            "method": method_name,
+                            "video_id": video_id,
+                            "split": split,
+                        })
+                continue
+
+            vpath = os.path.join(video_dir, vfile)
+            extracted = extract_frames(vpath, num_frames=args.num_frames)
+            if not extracted:
+                total_skipped += 1
+                continue
+
+            for fi, (frame_idx, frame) in enumerate(extracted):
+                frame_name = f"{method_name}_{video_id}_f{fi:02d}.jpg"
+                frame_path = os.path.join(frames_dir, frame_name)
+                face = crop_face_simple(frame, margin=args.face_margin)
+                cv2.imwrite(frame_path, face)
+
+                all_samples.append({
+                    "image": frame_name,
+                    "label": label,
+                    "is_real": is_real,
+                    "method": method_name,
+                    "video_id": video_id,
+                    "split": split,
+                })
 
     logger.info(
         "Extracted %d samples total (skipped %d videos)",
