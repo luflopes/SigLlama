@@ -65,7 +65,7 @@ def parse_args():
 
 class FaceGroundVLM_MoE(nn.Module):
     """Wraps a backbone VLM with LoRA-MoE: multiple LoRA state dicts
-    blended at inference via a router. Works with PaliGemma2 and TinyLLaVA."""
+    blended at inference via a router."""
 
     def __init__(
         self,
@@ -189,7 +189,7 @@ def maybe_sample(
 
 
 def build_dataloaders(cfg, tokenizer, image_processor, dino_transform):
-    backbone = cfg.get("backbone", "paligemma")
+    backbone = cfg.get("backbone", "tinyllava")
     max_len = cfg.get("max_text_length", 384)
     train_ds = DDVQADataset(
         metadata_path=cfg["train_metadata"],

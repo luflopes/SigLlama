@@ -1,0 +1,23 @@
+# DINOv2 Classification Head (Stage A)
+# Trains a small MLP on the DINOv2-Large CLS token for binary deepfake
+# detection on the full FaceForensics++ dataset.
+
+dinov2_model: "facebook/dinov2-large"
+num_classes: 2
+head_hidden_dim: 256
+head_dropout: 0.1
+image_size: 384
+
+# --- Data ---
+data_root: "/datasets/deepfake/ff_classification"
+
+# --- Training ---
+batch_size: 64
+num_workers: 4
+learning_rate: 1.0e-3
+weight_decay: 1.0e-4
+max_epochs: 15
+seed: 42
+
+# --- Output ---
+output_dir: "outputs/dino_classifier"

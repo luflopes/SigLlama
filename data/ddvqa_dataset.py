@@ -66,14 +66,16 @@ class DDVQADataset(Dataset):
         tokenizer: Any,
         image_processor: Any,
         dino_transform: Any,
-        backbone: str = "paligemma",
+        backbone: str = "tinyllava",
         max_length: int = 256,
         enforce_verdict_prefix: bool = True,
+        augment_transform: Any = None,
     ):
         self.image_root = image_root
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.dino_transform = dino_transform
+        self.augment_transform = augment_transform
         self.backbone = backbone
         self.max_length = max_length
         self.enforce_verdict_prefix = enforce_verdict_prefix
@@ -133,6 +135,9 @@ class DDVQADataset(Dataset):
         prefix_text, answer_text = format_vqa_prompt(
             question, answer, self.backbone,
         )
+
+        if self.augment_transform is not None:
+            img = self.augment_transform(img)
 
         pixel_values_siglip = self.image_processor(
             images=img, return_tensors="pt"

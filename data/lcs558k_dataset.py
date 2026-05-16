@@ -41,7 +41,7 @@ class LCS558KDataset(Dataset):
         tokenizer: Any,
         image_processor: Any,
         dino_transform: Any,
-        backbone: str = "paligemma",
+        backbone: str = "tinyllava",
         max_length: int = 128,
     ):
         self.image_root = image_root

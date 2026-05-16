@@ -240,12 +240,10 @@ def parse_bbox_text(text: str) -> list[tuple[int, int, int, int]]:
 
 
 def parse_loc_tokens(text: str) -> list[tuple[int, int, int, int]]:
-    """Extract bounding boxes from either textual ``[y1,x1,y2,x2]`` (preferred)
-    or legacy ``<locYYYY>`` PaliGemma2 sequences.
+    """Extract bounding boxes from textual ``[y1,x1,y2,x2]`` sequences.
 
-    Both formats return ``(y1, x1, y2, x2)`` tuples. Coordinate scales
-    (1000 vs 1023) are close enough that a shared IoU threshold remains
-    meaningful across formats.
+    Returns ``(y1, x1, y2, x2)`` tuples with coordinates in the 0-1000
+    range.
     """
     boxes = parse_bbox_text(text)
     if boxes:

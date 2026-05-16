@@ -1,0 +1,49 @@
+# G1 — Baseline: SigLIP only, end-to-end verdict, no DINOv2, no augmentation
+# Equivalent to Run D. LoRA on TinyLlama + MLP connector unfrozen.
+seed: 42
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: false
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+adapter_checkpoint: null
+lora_checkpoint: null
+
+train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/test.jsonl"
+image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+max_text_length: 256
+
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules: ["q_proj", "v_proj"]
+lora_dropout: 0.05
+
+max_epochs: 5
+batch_size: 16
+gradient_accumulation_steps: 4
+num_workers: 2
+balanced_sampling: true
+first_token_loss_weight: 1.0
+augmentation: false
+
+train_connector: true
+connector_lr: 5.0e-6
+adapter_lr: 5.0e-5
+lora_lr: 2.0e-5
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+log_interval: 20
+save_interval: 200
+val_interval: 100
+sample_interval: 100
+output_dir: "outputs/ablation/g1_baseline/stage2"

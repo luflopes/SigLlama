@@ -52,7 +52,7 @@ def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
         tokenizer=tokenizer,
         image_processor=image_processor,
         dino_transform=dino_transform,
-        backbone=cfg.get("backbone", "paligemma"),
+        backbone=cfg.get("backbone", "tinyllava"),
         max_length=cfg.get("max_text_length", 128),
     )
 

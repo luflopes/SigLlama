@@ -15,71 +15,52 @@ def build_model(cfg: dict, *, use_lora: bool | None = None) -> nn.Module:
     Parameters
     ----------
     cfg : dict
-        Parsed YAML config. Must contain ``backbone`` ∈ {"paligemma",
-        "tinyllava"} plus the per-backbone hyper-parameters.
+        Parsed YAML config. Must contain ``backbone`` (default ``"tinyllava"``)
+        plus the per-backbone hyper-parameters.
     use_lora : bool | None
         Override the ``use_lora`` flag (stage 1 disables it; stage 2+
         enables it). When ``None`` we infer from ``cfg.get('use_lora', False)``.
     """
-    backbone = cfg.get("backbone", "paligemma").lower()
+    backbone = cfg.get("backbone", "tinyllava").lower()
     do_lora = cfg.get("use_lora", False) if use_lora is None else use_lora
 
     first_token_w = float(cfg.get("first_token_loss_weight", 1.0))
 
-    if backbone == "paligemma":
-        from .face_ground_vlm import FaceGroundVLM
-        model = FaceGroundVLM(
-            paligemma_model=cfg["paligemma_model"],
-            dinov2_model=cfg["dinov2_model"],
-            mof_strategy=cfg.get("mof_strategy", "interleave"),
-            use_dino=cfg.get("use_dino", True),
-            use_lora=do_lora,
-            lora_rank=int(cfg.get("lora_rank", 16)),
-            lora_alpha=int(cfg.get("lora_alpha", 32)),
-            lora_target_modules=cfg.get("lora_target_modules"),
-            lora_dropout=float(cfg.get("lora_dropout", 0.05)),
-            first_token_loss_weight=first_token_w,
+    if backbone != "tinyllava":
+        raise ValueError(
+            f"Unknown backbone '{backbone}'. Only 'tinyllava' is supported."
         )
-        return model
 
-    if backbone == "tinyllava":
-        from .tinyllava_ground_vlm import TinyLLaVAGroundVLM
-        tinyllava_weights = cfg.get("tinyllava_weights")
-        if cfg.get("load_tinyllava_weights", True) is False:
-            tinyllava_weights = None
-        model = TinyLLaVAGroundVLM(
-            siglip_model=cfg.get("siglip_model", "google/siglip-so400m-patch14-384"),
-            tinyllama_model=cfg.get(
-                "tinyllama_model", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-            ),
-            tinyllava_weights=tinyllava_weights,
-            use_dino=cfg.get("use_dino", True),
-            dinov2_model=cfg.get("dinov2_model", "facebook/dinov2-large"),
-            mof_strategy=cfg.get("mof_strategy", "interleave"),
-            vision_select_layer=int(cfg.get("vision_select_layer", -2)),
-            connector_hidden_dim=int(cfg.get("connector_hidden_dim", 2048)),
-            use_lora=do_lora,
-            lora_rank=int(cfg.get("lora_rank", 16)),
-            lora_alpha=int(cfg.get("lora_alpha", 32)),
-            lora_target_modules=cfg.get("lora_target_modules"),
-            lora_dropout=float(cfg.get("lora_dropout", 0.05)),
-            first_token_loss_weight=first_token_w,
-            train_connector=bool(cfg.get("train_connector", False)),
-        )
-        return model
-
-    raise ValueError(
-        f"Unknown backbone '{backbone}'. Expected 'paligemma' or 'tinyllava'."
+    from .tinyllava_ground_vlm import TinyLLaVAGroundVLM
+    tinyllava_weights = cfg.get("tinyllava_weights")
+    if cfg.get("load_tinyllava_weights", True) is False:
+        tinyllava_weights = None
+    model = TinyLLaVAGroundVLM(
+        siglip_model=cfg.get("siglip_model", "google/siglip-so400m-patch14-384"),
+        tinyllama_model=cfg.get(
+            "tinyllama_model", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        ),
+        tinyllava_weights=tinyllava_weights,
+        use_dino=cfg.get("use_dino", True),
+        dinov2_model=cfg.get("dinov2_model", "facebook/dinov2-large"),
+        mof_strategy=cfg.get("mof_strategy", "interleave"),
+        vision_select_layer=int(cfg.get("vision_select_layer", -2)),
+        connector_hidden_dim=int(cfg.get("connector_hidden_dim", 2048)),
+        use_lora=do_lora,
+        lora_rank=int(cfg.get("lora_rank", 16)),
+        lora_alpha=int(cfg.get("lora_alpha", 32)),
+        lora_target_modules=cfg.get("lora_target_modules"),
+        lora_dropout=float(cfg.get("lora_dropout", 0.05)),
+        first_token_loss_weight=first_token_w,
+        train_connector=bool(cfg.get("train_connector", False)),
     )
+    return model
 
 
 def model_hidden_size(model: Any) -> int:
-    """Return the LLM hidden size for both backbones (used by LoRA-MoE)."""
+    """Return the LLM hidden size (used by LoRA-MoE)."""
     if hasattr(model, "hidden_size"):
         return int(model.hidden_size)
-    # FaceGroundVLM exposes this via paligemma.config.text_config.
-    if hasattr(model, "paligemma"):
-        return int(model.paligemma.config.text_config.hidden_size)
     raise AttributeError("Cannot determine hidden size for the given model.")
 
 

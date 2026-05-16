@@ -1,9 +1,8 @@
 """Backbone-aware factory for text+image preprocessing components.
 
-Both FaceGroundVLM (PaliGemma2) and TinyLLaVAGroundVLM need a tokenizer,
-an image processor (for SigLIP-side features), and a DINOv2 transform.
-These differ in resolution and tokenizer family, but the downstream
-datasets consume a uniform protocol::
+TinyLLaVAGroundVLM needs a tokenizer, an image processor (for SigLIP-side
+features), and a DINOv2 transform. The downstream datasets consume a
+uniform protocol::
 
     tokenizer(text, ...)            -> input_ids, attention_mask
     image_processor(images=..., return_tensors="pt")["pixel_values"]
@@ -14,9 +13,9 @@ This module centralises the construction.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
-from torchvision.transforms import Compose, Normalize, Resize, ToTensor
+from torchvision import transforms as T
 
 logger = logging.getLogger(__name__)
 
@@ -27,66 +26,74 @@ _IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
 def _build_dino_transform(image_size: int) -> Any:
-    return Compose(
+    return T.Compose(
         [
-            Resize((image_size, image_size)),
-            ToTensor(),
-            Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
+            T.Resize((image_size, image_size)),
+            T.ToTensor(),
+            T.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
         ]
     )
 
 
+def build_augment_transform(cfg: dict) -> Callable | None:
+    """Build a PIL-level augmentation applied before model preprocessing.
+
+    Controlled by the ``augmentation`` config key (default ``false``).
+    Only colour/photometric transforms are used — no geometric transforms
+    — so bounding-box annotations in Stage 3 remain valid.
+
+    Returns ``None`` when augmentation is disabled.
+    """
+    if not cfg.get("augmentation", False):
+        return None
+
+    aug = T.Compose([
+        T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
+        T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))], p=0.1),
+        T.RandomGrayscale(p=0.05),
+    ])
+    logger.info("Augmentation enabled (color-only, bbox-safe)")
+    return aug
+
+
 def build_processor_and_transforms(cfg: dict) -> dict[str, Any]:
     """Return a dict with keys: ``tokenizer``, ``image_processor``,
-    ``dino_transform``, ``processor`` (full processor when available,
-    else ``None``), and ``backbone``.
+    ``dino_transform``, ``processor`` (always ``None``), and ``backbone``.
+
+    The ``backbone`` parameter is kept for backward compatibility with
+    older configs that pass ``backbone: "tinyllava"`` explicitly.
     """
-    backbone = cfg.get("backbone", "paligemma").lower()
+    backbone = cfg.get("backbone", "tinyllava").lower()
 
-    if backbone == "paligemma":
-        from transformers import AutoProcessor
-        processor = AutoProcessor.from_pretrained(cfg["paligemma_model"])
-        tokenizer = processor.tokenizer
-        image_processor = processor.image_processor
-        image_size = 448
-        dino_transform = _build_dino_transform(image_size)
-        logger.info("Built PaliGemma processor (img=%d)", image_size)
-        return {
-            "backbone": backbone,
-            "tokenizer": tokenizer,
-            "image_processor": image_processor,
-            "dino_transform": dino_transform,
-            "processor": processor,
-            "image_size": image_size,
-        }
-
-    if backbone == "tinyllava":
-        from transformers import AutoImageProcessor, AutoTokenizer
-        tokenizer_id = cfg.get(
-            "tokenizer_id", cfg.get(
-                "tinyllama_model", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-            ),
+    if backbone != "tinyllava":
+        raise ValueError(
+            f"Unknown backbone '{backbone}'. Only 'tinyllava' is supported."
         )
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
-        if tokenizer.pad_token is None:
-            # TinyLlama doesn't ship a pad token; reuse EOS to enable padding.
-            tokenizer.pad_token = tokenizer.eos_token
-        # Use the right-pad convention expected by causal LMs.
-        tokenizer.padding_side = "right"
 
-        image_processor = AutoImageProcessor.from_pretrained(
-            cfg.get("siglip_model", "google/siglip-so400m-patch14-384"),
-        )
-        image_size = int(cfg.get("image_size", 384))
-        dino_transform = _build_dino_transform(image_size)
-        logger.info("Built TinyLLaVA processor (img=%d)", image_size)
-        return {
-            "backbone": backbone,
-            "tokenizer": tokenizer,
-            "image_processor": image_processor,
-            "dino_transform": dino_transform,
-            "processor": None,
-            "image_size": image_size,
-        }
+    from transformers import AutoImageProcessor, AutoTokenizer
+    tokenizer_id = cfg.get(
+        "tokenizer_id", cfg.get(
+            "tinyllama_model", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        ),
+    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
-    raise ValueError(f"Unknown backbone '{backbone}'")
+    image_processor = AutoImageProcessor.from_pretrained(
+        cfg.get("siglip_model", "google/siglip-so400m-patch14-384"),
+    )
+    image_size = int(cfg.get("image_size", 384))
+    dino_transform = _build_dino_transform(image_size)
+    augment_transform = build_augment_transform(cfg)
+    logger.info("Built TinyLLaVA processor (img=%d, aug=%s)", image_size, augment_transform is not None)
+    return {
+        "backbone": backbone,
+        "tokenizer": tokenizer,
+        "image_processor": image_processor,
+        "dino_transform": dino_transform,
+        "augment_transform": augment_transform,
+        "processor": None,
+        "image_size": image_size,
+    }

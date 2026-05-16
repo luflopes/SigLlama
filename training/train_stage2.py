@@ -79,8 +79,9 @@ def build_train_sampler(
     )
 
 
-def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
-    backbone = cfg.get("backbone", "paligemma")
+def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform,
+                      augment_transform=None):
+    backbone = cfg.get("backbone", "tinyllava")
     max_len = cfg.get("max_text_length", 256)
     train_ds = DDVQADataset(
         metadata_path=cfg["train_metadata"],
@@ -90,6 +91,7 @@ def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
         dino_transform=dino_transform,
         backbone=backbone,
         max_length=max_len,
+        augment_transform=augment_transform,
     )
     val_ds = DDVQADataset(
         metadata_path=cfg["val_metadata"],
@@ -100,6 +102,12 @@ def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform):
         backbone=backbone,
         max_length=max_len,
     )
+
+    max_train = cfg.get("max_train_samples")
+    if max_train and max_train < len(train_ds):
+        train_ds.samples = train_ds.samples[:max_train]
+        logger.info("Sub-sampled training set to %d samples", max_train)
+
     sampler = build_train_sampler(train_ds, cfg)
     nw = cfg["num_workers"]
     train_kwargs: dict = {
@@ -213,6 +221,22 @@ def maybe_sample(
     )
 
 
+def _save_state(model, optimizer, scheduler, accelerator, global_step, path: Path) -> None:
+    """Save a full checkpoint to *path*."""
+    um = accelerator.unwrap_model(model)
+    state = {
+        "step": global_step,
+        "lora": get_peft_model_state_dict(um.language_model),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+    }
+    if um.dino_adapter is not None:
+        state["adapter"] = um.dino_adapter.state_dict()
+    if getattr(um, "train_connector", False) and hasattr(um, "connector"):
+        state["connector"] = um.connector.state_dict()
+    torch.save(state, path)
+
+
 def load_adapter_checkpoint(model, path: str) -> None:
     if model.dino_adapter is None:
         logger.info("use_dino=False: skipping adapter checkpoint load")
@@ -276,7 +300,8 @@ def main() -> None:
     tokenizer = proc["tokenizer"]
     image_processor = proc["image_processor"]
     dino_transform = proc["dino_transform"]
-    backbone = cfg.get("backbone", "paligemma")
+    augment_transform = proc.get("augment_transform")
+    backbone = cfg.get("backbone", "tinyllava")
 
     model = build_model(cfg, use_lora=True)
     model.enable_input_require_grads()
@@ -297,6 +322,7 @@ def main() -> None:
 
     train_loader, val_loader = build_dataloaders(
         cfg, tokenizer, image_processor, dino_transform,
+        augment_transform=augment_transform,
     )
 
     adapter_params = (
@@ -370,6 +396,7 @@ def main() -> None:
     sample_interval = int(cfg["sample_interval"])
     max_grad_norm = float(cfg["max_grad_norm"])
 
+    best_val_loss = float("inf")
     global_step = start_step
     sample_batch = None
     for sb in val_loader:
@@ -447,19 +474,8 @@ def main() -> None:
                         and global_step % save_interval == 0
                         and accelerator.is_main_process
                     ):
-                        um = accelerator.unwrap_model(model)
                         ckpt_path = output_dir / f"checkpoint-{global_step}.pt"
-                        state = {
-                            "step": global_step,
-                            "lora": get_peft_model_state_dict(um.language_model),
-                            "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict(),
-                        }
-                        if um.dino_adapter is not None:
-                            state["adapter"] = um.dino_adapter.state_dict()
-                        if getattr(um, "train_connector", False) and hasattr(um, "connector"):
-                            state["connector"] = um.connector.state_dict()
-                        torch.save(state, ckpt_path)
+                        _save_state(model, optimizer, scheduler, accelerator, global_step, ckpt_path)
                         logger.info("Saved %s", ckpt_path)
 
                     if (
@@ -471,6 +487,11 @@ def main() -> None:
                             vloss = validation_loss(model, val_loader, accelerator)
                             if vloss is not None:
                                 logger.info("validation loss: %.6f", vloss)
+                                if vloss < best_val_loss:
+                                    best_val_loss = vloss
+                                    best_path = output_dir / "checkpoint-best.pt"
+                                    _save_state(model, optimizer, scheduler, accelerator, global_step, best_path)
+                                    logger.info("New best val_loss=%.6f -> saved %s", vloss, best_path)
                         except Exception as e:
                             logger.warning(
                                 "Validation at step %s failed (skipped): %s",
@@ -507,6 +528,11 @@ def main() -> None:
                 vloss = validation_loss(model, val_loader, accelerator)
                 if vloss is not None:
                     logger.info("[epoch %s end] validation loss: %.6f", epoch, vloss)
+                    if vloss < best_val_loss:
+                        best_val_loss = vloss
+                        best_path = output_dir / "checkpoint-best.pt"
+                        _save_state(model, optimizer, scheduler, accelerator, global_step, best_path)
+                        logger.info("New best val_loss=%.6f -> saved %s", vloss, best_path)
             except Exception as e:
                 logger.warning("End-of-epoch validation failed (skipped): %s", e)
             try:
@@ -518,20 +544,10 @@ def main() -> None:
                 logger.warning("End-of-epoch sampling failed (skipped): %s", e)
 
     if accelerator.is_main_process:
-        um = accelerator.unwrap_model(model)
         final_path = output_dir / "checkpoint-final.pt"
-        state = {
-            "step": global_step,
-            "lora": get_peft_model_state_dict(um.language_model),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-        }
-        if um.dino_adapter is not None:
-            state["adapter"] = um.dino_adapter.state_dict()
-        if getattr(um, "train_connector", False) and hasattr(um, "connector"):
-            state["connector"] = um.connector.state_dict()
-        torch.save(state, final_path)
+        _save_state(model, optimizer, scheduler, accelerator, global_step, final_path)
         logger.info("Saved %s", final_path)
+        logger.info("Best val_loss achieved: %.6f", best_val_loss)
 
 
 if __name__ == "__main__":

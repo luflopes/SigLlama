@@ -2,12 +2,20 @@
 
 Metrics follow TruthLens: detection accuracy, BLEU-3, BLEU-4, ROUGE-L, CIDEr.
 
-Usage::
+Usage (end-to-end verdict from LLM)::
 
     python evaluation/evaluate.py \
-        --config configs/stage2_finetune.yaml \
-        --checkpoint outputs/stage2_finetune/checkpoint-final.pt \
-        --split val
+        --config configs/tinyllava_stage2_finetune.yaml \
+        --checkpoint outputs/.../checkpoint-final.pt \
+        --split test
+
+Usage (verdict from DINOv2 classifier)::
+
+    python evaluation/evaluate.py \
+        --config configs/tinyllava_stage2_finetune.yaml \
+        --checkpoint outputs/.../checkpoint-final.pt \
+        --classifier-checkpoint outputs/dino_classifier/best.pt \
+        --split test
 """
 from __future__ import annotations
 
@@ -63,8 +71,21 @@ def parse_args():
         default=True,
         help=(
             "Restrict the first generated token to a Real/Fake candidate "
-            "(use --no-constrained-first-token to disable)."
+            "(use --no-constrained-first-token to disable). "
+            "Ignored when --classifier-checkpoint is provided."
         ),
+    )
+    p.add_argument(
+        "--classifier-checkpoint", default=None,
+        help=(
+            "Path to DINOv2 classifier checkpoint (best.pt). When set, "
+            "the verdict is predicted by the classifier and forced as "
+            "prefix tokens, replacing constrained-first-token decoding."
+        ),
+    )
+    p.add_argument(
+        "--classifier-dinov2-model", default="facebook/dinov2-large",
+        help="DINOv2 model name for the classifier (must match training).",
     )
     return p.parse_args()
 
@@ -157,6 +178,59 @@ class VerdictPrefixProcessor(LogitsProcessor):
         return out
 
 
+class ForcedVerdictProcessor(LogitsProcessor):
+    """Force each row to emit a pre-determined verdict token sequence.
+
+    Unlike ``VerdictPrefixProcessor`` (which constrains to *any* valid
+    verdict), this processor forces a *specific* verdict per batch
+    element, as predicted by the external DINOv2 classifier.
+    """
+
+    def __init__(self, forced_ids_per_row: list[list[int]]):
+        """
+        Parameters
+        ----------
+        forced_ids_per_row : list[list[int]]
+            For each batch element, the token IDs to force (e.g. the
+            tokenisation of " Real" or " Fake").
+        """
+        super().__init__()
+        self.forced = forced_ids_per_row
+        self.max_len = max((len(ids) for ids in forced_ids_per_row), default=0)
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        gen_len = input_ids.shape[-1]
+        if gen_len >= self.max_len:
+            return scores
+        out = scores.clone()
+        for b in range(min(input_ids.shape[0], len(self.forced))):
+            ids = self.forced[b]
+            if gen_len >= len(ids):
+                continue
+            target_id = ids[gen_len]
+            mask = torch.full_like(out[b], float("-inf"))
+            mask[target_id] = out[b, target_id]
+            out[b] = mask
+        return out
+
+
+def _load_classifier(checkpoint_path: str, dinov2_model: str, device: torch.device):
+    """Load the DINOv2 classifier for verdict prediction."""
+    from models.dino_classifier import DINOv2Classifier
+    classifier = DINOv2Classifier(dino_model=dinov2_model)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    classifier.head.load_state_dict(ckpt["head"])
+    classifier.to(device)
+    classifier.eval()
+    logger.info(
+        "Loaded DINOv2 classifier from %s (epoch %s, val_acc=%.4f)",
+        checkpoint_path,
+        ckpt.get("epoch", "?"),
+        ckpt.get("val_metrics", {}).get("accuracy", 0.0),
+    )
+    return classifier
+
+
 def load_model(cfg: dict, checkpoint_path: str, device: torch.device):
     model = build_model(cfg, use_lora=True)
 
@@ -198,7 +272,7 @@ def main():
         tokenizer=tokenizer,
         image_processor=image_processor,
         dino_transform=dino_transform,
-        backbone=cfg.get("backbone", "paligemma"),
+        backbone=cfg.get("backbone", "tinyllava"),
         max_length=cfg.get("max_text_length", 256),
     )
 
@@ -210,17 +284,33 @@ def main():
         collate_fn=collate_ddvqa,
     )
 
+    # ---- Classifier setup (optional) ----
+    classifier = None
+    use_classifier = args.classifier_checkpoint is not None
+    if use_classifier:
+        classifier = _load_classifier(
+            args.classifier_checkpoint, args.classifier_dinov2_model, device,
+        )
+        # Pre-tokenise verdict prefixes for forced decoding
+        _verdict_token_map = {}
+        for v in ("Real", "Fake"):
+            ids = tokenizer.encode(f" {v}", add_special_tokens=False)
+            _verdict_token_map[v] = ids
+            logger.info("Verdict '%s' -> token ids %s", v, ids)
+
     predictions: list[str] = []
     references: list[str] = []
     pred_labels: list[str] = []
     pred_labels_legacy: list[str] = []
     true_labels: list[str] = []
+    classifier_verdicts_log: list[str] = []
     per_sample_rows: list[dict] = []
 
-    backbone = cfg.get("backbone", "paligemma")
+    backbone = cfg.get("backbone", "tinyllava")
 
+    # Constrained decoding (only when classifier is NOT used)
     first_token_processor: LogitsProcessorList | None = None
-    if args.constrained_first_token:
+    if not use_classifier and args.constrained_first_token:
         verdict_paths = _build_verdict_paths(tokenizer)
         if verdict_paths:
             first_token_processor = LogitsProcessorList(
@@ -246,13 +336,14 @@ def main():
                 "unconstrained decoding."
             )
 
-    logger.info("Running inference on %d samples...", len(dataset))
+    logger.info(
+        "Running inference on %d samples (classifier=%s)...",
+        len(dataset), "YES" if use_classifier else "no",
+    )
     for batch in tqdm(loader, desc="Evaluating"):
         if batch is None:
             continue
 
-        # Rebuild *query-only* inputs (left-padded) for generation so the
-        # model is never fed the reference answer.
         questions = batch.get("question", [])
         gen_inputs = build_generation_inputs(
             questions, tokenizer, backbone,
@@ -268,7 +359,18 @@ def main():
             gen_overrides["repetition_penalty"] = args.repetition_penalty
         if args.no_repeat_ngram_size is not None:
             gen_overrides["no_repeat_ngram_size"] = args.no_repeat_ngram_size
-        if first_token_processor is not None:
+
+        batch_verdicts: list[str] | None = None
+
+        if use_classifier and classifier is not None:
+            with torch.no_grad():
+                batch_verdicts = classifier.predict_verdict(pv_din)
+            forced_ids = [_verdict_token_map[v] for v in batch_verdicts]
+            gen_overrides["logits_processor"] = LogitsProcessorList(
+                [ForcedVerdictProcessor(forced_ids)]
+            )
+            classifier_verdicts_log.extend(batch_verdicts)
+        elif first_token_processor is not None:
             gen_overrides["logits_processor"] = first_token_processor
 
         with torch.no_grad():
@@ -282,7 +384,6 @@ def main():
             )
 
         gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-        # Reference strings come from the original (untruncated) answer field.
         ref_texts = list(batch.get("answer", []))
 
         images = batch.get("image", [""] * len(gen_texts))
@@ -290,13 +391,17 @@ def main():
         answers = batch.get("answer", [""] * len(gen_texts))
         methods = batch.get("method", ["unknown"] * len(gen_texts))
 
-        for gen, ref, lbl, img, q, a, meth in zip(
+        for i, (gen, ref, lbl, img, q, a, meth) in enumerate(zip(
             gen_texts, ref_texts, batch["label_str"],
             images, questions, answers, methods,
-        ):
+        )):
             gen_str = gen.strip()
             ref_str = ref.strip()
-            pred_lbl = parse_real_fake(gen_str)
+
+            if use_classifier and batch_verdicts is not None:
+                pred_lbl = batch_verdicts[i].lower()
+            else:
+                pred_lbl = parse_real_fake(gen_str)
             pred_lbl_legacy = parse_real_fake_legacy(gen_str)
 
             predictions.append(gen_str)
@@ -305,7 +410,7 @@ def main():
             pred_labels_legacy.append(pred_lbl_legacy)
             true_labels.append(lbl)
 
-            per_sample_rows.append({
+            row = {
                 "image": img,
                 "question": q,
                 "reference_answer": a or ref_str,
@@ -316,7 +421,10 @@ def main():
                 "correct": pred_lbl == lbl,
                 "correct_legacy": pred_lbl_legacy == lbl,
                 "method": meth,
-            })
+            }
+            if use_classifier and batch_verdicts is not None:
+                row["classifier_verdict"] = batch_verdicts[i]
+            per_sample_rows.append(row)
 
     from evaluation.metrics import (
         compute_bleu,
@@ -343,7 +451,10 @@ def main():
         **detection,
         "detection_legacy": detection_legacy,
         "constrained_first_token": bool(first_token_processor is not None),
+        "classifier_used": use_classifier,
     }
+    if use_classifier:
+        results["classifier_checkpoint"] = args.classifier_checkpoint
 
     output_dir = args.output_dir or os.path.join(cfg["output_dir"], "evaluation")
     os.makedirs(output_dir, exist_ok=True)
