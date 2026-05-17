@@ -119,6 +119,11 @@ def build_dataloaders(cfg: dict):
         train_ds.samples = train_ds.samples[:max_train]
         logger.info("Sub-sampled training set to %d samples", max_train)
 
+    max_val = cfg.get("max_val_samples")
+    if max_val and max_val < len(val_ds):
+        val_ds.samples = val_ds.samples[:max_val]
+        logger.info("Sub-sampled validation set to %d samples", max_val)
+
     if augmentation:
         logger.info("Classifier augmentation enabled (geometric + color)")
 

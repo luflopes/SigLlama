@@ -108,6 +108,11 @@ def build_dataloaders(cfg: dict, tokenizer, image_processor, dino_transform,
         train_ds.samples = train_ds.samples[:max_train]
         logger.info("Sub-sampled training set to %d samples", max_train)
 
+    max_val = cfg.get("max_val_samples")
+    if max_val and max_val < len(val_ds):
+        val_ds.samples = val_ds.samples[:max_val]
+        logger.info("Sub-sampled validation set to %d samples", max_val)
+
     sampler = build_train_sampler(train_ds, cfg)
     nw = cfg["num_workers"]
     train_kwargs: dict = {

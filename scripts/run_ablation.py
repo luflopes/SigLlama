@@ -106,6 +106,7 @@ def _apply_dryrun_overrides(cfg: dict) -> dict:
     """Override config values for a fast dry-run."""
     cfg = deepcopy(cfg)
     cfg["max_train_samples"] = 32
+    cfg["max_val_samples"] = 32
     cfg["max_epochs"] = 1
     cfg["batch_size"] = 4
     cfg["gradient_accumulation_steps"] = 1
@@ -154,6 +155,7 @@ def train_classifier(dry_run: bool) -> bool:
     cfg["augmentation"] = True
     if dry_run:
         cfg["max_train_samples"] = 32
+        cfg["max_val_samples"] = 32
         cfg["max_epochs"] = 2
         cfg["batch_size"] = 8
         cfg["num_workers"] = 0
