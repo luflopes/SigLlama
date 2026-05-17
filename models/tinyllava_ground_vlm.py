@@ -163,7 +163,7 @@ class TinyLLaVAGroundVLM(nn.Module):
             self.dinov2.requires_grad_(False)
             dino_dim = self.dinov2.config.hidden_size
             self.dino_adapter = DINOv2Adapter(
-                dino_dim=dino_dim, gemma_dim=llm_hidden,
+                dino_dim=dino_dim, target_dim=llm_hidden,
             )
         else:
             self.dinov2 = None
