@@ -20,11 +20,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import math
+
 import torch
 import torch.nn as nn
 import yaml
 from PIL import Image
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms as T
 from tqdm import tqdm
@@ -195,6 +198,39 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict
     }
 
 
+def _build_scheduler(
+    optimizer: AdamW,
+    cfg: dict,
+    steps_per_epoch: int,
+) -> LambdaLR | None:
+    """Build a per-step LR scheduler with optional linear warmup + cosine decay."""
+    sched_type = cfg.get("lr_scheduler")
+    if not sched_type:
+        return None
+
+    warmup_epochs = int(cfg.get("warmup_epochs", 0))
+    max_epochs = int(cfg.get("max_epochs", 15))
+    warmup_steps = warmup_epochs * steps_per_epoch
+    total_steps = max_epochs * steps_per_epoch
+
+    if sched_type == "cosine":
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return max(step / max(warmup_steps, 1), 1e-2)
+            progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+            return max(0.5 * (1.0 + math.cos(math.pi * progress)), 1e-2)
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+        logger.info(
+            "LR scheduler: cosine (warmup=%d steps, total=%d steps)",
+            warmup_steps, total_steps,
+        )
+        return scheduler
+
+    logger.warning("Unknown lr_scheduler '%s', skipping", sched_type)
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train DINOv2 classification head")
     parser.add_argument("--config", required=True)
@@ -234,16 +270,20 @@ def main() -> None:
 
     optimizer = AdamW(
         head_params,
-        lr=float(cfg.get("learning_rate", 1e-3)),
-        weight_decay=float(cfg.get("weight_decay", 1e-4)),
+        lr=float(cfg.get("learning_rate", 1e-4)),
+        weight_decay=float(cfg.get("weight_decay", 1e-2)),
     )
     criterion = nn.CrossEntropyLoss()
 
     train_loader, val_loader = build_dataloaders(cfg)
 
-    max_epochs = int(cfg.get("max_epochs", 15))
+    max_epochs = int(cfg.get("max_epochs", 20))
+    patience = int(cfg.get("early_stopping_patience", 0))
     best_val_acc = 0.0
     best_epoch = -1
+    epochs_without_improvement = 0
+
+    scheduler = _build_scheduler(optimizer, cfg, steps_per_epoch=len(train_loader))
 
     for epoch in range(max_epochs):
         model.train()
@@ -265,14 +305,20 @@ def main() -> None:
             loss.backward()
             optimizer.step()
 
+            if scheduler is not None:
+                scheduler.step()
+
             bs = labels.size(0)
             epoch_loss += loss.item() * bs
             preds = logits.argmax(dim=-1)
             epoch_correct += (preds == labels).sum().item()
             epoch_total += bs
+
+            current_lr = optimizer.param_groups[0]["lr"]
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}",
                 acc=f"{epoch_correct / max(epoch_total, 1):.3f}",
+                lr=f"{current_lr:.2e}",
             )
 
         train_acc = epoch_correct / max(epoch_total, 1)
@@ -280,16 +326,18 @@ def main() -> None:
 
         val_metrics = evaluate(model, val_loader, device)
 
+        current_lr = optimizer.param_groups[0]["lr"]
         logger.info(
-            "epoch=%d train_loss=%.4f train_acc=%.4f | "
+            "epoch=%d lr=%.2e train_loss=%.4f train_acc=%.4f | "
             "val_loss=%.4f val_acc=%.4f val_f1=%.4f",
-            epoch, train_loss, train_acc,
+            epoch, current_lr, train_loss, train_acc,
             val_metrics["loss"], val_metrics["accuracy"], val_metrics["f1"],
         )
 
         if val_metrics["accuracy"] > best_val_acc:
             best_val_acc = val_metrics["accuracy"]
             best_epoch = epoch
+            epochs_without_improvement = 0
             torch.save(
                 {
                     "epoch": epoch,
@@ -299,6 +347,8 @@ def main() -> None:
                 output_dir / "best.pt",
             )
             logger.info("  -> New best val_acc=%.4f (saved best.pt)", best_val_acc)
+        else:
+            epochs_without_improvement += 1
 
         torch.save(
             {
@@ -310,16 +360,25 @@ def main() -> None:
             output_dir / "last.pt",
         )
 
+        if patience > 0 and epochs_without_improvement >= patience:
+            logger.info(
+                "Early stopping: no improvement in val_acc for %d epochs "
+                "(best=%.4f at epoch %d)",
+                patience, best_val_acc, best_epoch,
+            )
+            break
+
     logger.info(
-        "Training complete. Best val_acc=%.4f at epoch %d",
-        best_val_acc, best_epoch,
+        "Training complete. Best val_acc=%.4f at epoch %d (ran %d/%d epochs)",
+        best_val_acc, best_epoch, epoch + 1, max_epochs,
     )
 
-    # Final evaluation summary
     results = {
         "best_val_accuracy": best_val_acc,
         "best_epoch": best_epoch,
-        "total_epochs": max_epochs,
+        "total_epochs_run": epoch + 1,
+        "max_epochs": max_epochs,
+        "early_stopped": epochs_without_improvement >= patience if patience > 0 else False,
     }
     with open(output_dir / "results.json", "w") as f:
         json.dump(results, f, indent=2)

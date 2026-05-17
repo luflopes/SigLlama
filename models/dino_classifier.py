@@ -33,7 +33,8 @@ class DINOv2Classifier(nn.Module):
 
         self.head = nn.Sequential(
             nn.Linear(dino_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, num_classes),
         )

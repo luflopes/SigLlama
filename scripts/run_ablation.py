@@ -159,6 +159,8 @@ def train_classifier(dry_run: bool) -> bool:
         cfg["max_epochs"] = 2
         cfg["batch_size"] = 8
         cfg["num_workers"] = 0
+        cfg["early_stopping_patience"] = 0
+        cfg["warmup_epochs"] = 0
 
     tmp = ROOT / "configs" / ".tmp_classifier_config.yaml"
     with open(tmp, "w") as f:
