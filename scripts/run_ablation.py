@@ -201,7 +201,7 @@ def evaluate_model(config_path: str, checkpoint: str, split: str,
         cmd.extend(["--classifier-checkpoint", classifier_ckpt])
 
     if dry_run:
-        cmd.extend(["--batch-size", "4"])
+        cmd.extend(["--batch-size", "4", "--max-eval-samples", "32"])
 
     rc = run_command(cmd, f"Evaluate {split} ({os.path.basename(checkpoint)})")
 

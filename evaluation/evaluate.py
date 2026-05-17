@@ -87,6 +87,10 @@ def parse_args():
         "--classifier-dinov2-model", default="facebook/dinov2-large",
         help="DINOv2 model name for the classifier (must match training).",
     )
+    p.add_argument(
+        "--max-eval-samples", type=int, default=None,
+        help="Limit evaluation to this many samples (useful for dry-run).",
+    )
     return p.parse_args()
 
 
@@ -264,7 +268,14 @@ def main():
     dino_transform = proc["dino_transform"]
 
     meta_key = "val_metadata" if args.split == "val" else "test_metadata"
-    metadata_path = cfg.get(meta_key, cfg.get("val_metadata"))
+    metadata_path = cfg.get(meta_key)
+    if metadata_path is None:
+        logger.error(
+            "Config has no '%s' key. Cannot evaluate on split '%s'. "
+            "Add the key to your config YAML or use --split val.",
+            meta_key, args.split,
+        )
+        sys.exit(1)
 
     dataset = DDVQADataset(
         metadata_path=metadata_path,
@@ -276,8 +287,18 @@ def main():
         max_length=cfg.get("max_text_length", 256),
     )
 
+    eval_dataset: torch.utils.data.Dataset = dataset
+    if args.max_eval_samples is not None and args.max_eval_samples < len(dataset):
+        eval_dataset = torch.utils.data.Subset(
+            dataset, list(range(args.max_eval_samples))
+        )
+        logger.info(
+            "Limiting evaluation to %d / %d samples",
+            args.max_eval_samples, len(dataset),
+        )
+
     loader = torch.utils.data.DataLoader(
-        dataset,
+        eval_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=2,
@@ -338,7 +359,7 @@ def main():
 
     logger.info(
         "Running inference on %d samples (classifier=%s)...",
-        len(dataset), "YES" if use_classifier else "no",
+        len(eval_dataset), "YES" if use_classifier else "no",
     )
     for batch in tqdm(loader, desc="Evaluating"):
         if batch is None:
