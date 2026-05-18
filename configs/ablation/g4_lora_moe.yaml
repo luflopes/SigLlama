@@ -1,4 +1,4 @@
-# G4 — + DINOv2 LoRA-MoE (5 experts): especialização por tipo, end-to-end verdict
+# G4 — + DINOv2 LoRA-MoE (6 experts): especialização por tipo, end-to-end verdict
 # DINOv2 com LoRA-MoE (Stage A) + adapter re-treinado (Stage 1').
 # Mede o valor de especialização por tipo de manipulação (MoE).
 seed: 42

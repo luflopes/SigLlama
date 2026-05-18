@@ -15,7 +15,7 @@ Grid:
   G1: Baseline SigLIP only
   G2: + DINOv2 frozen (I-MoF)
   G3: + DINOv2 LoRA single (deepfake-aware features)
-  G4: + DINOv2 LoRA-MoE (5 experts)
+  G4: + DINOv2 LoRA-MoE (6 experts)
   G5: + Classifier verdict (decoupled from LLM)
   G6: + Localization (Stage 3)
 
@@ -97,7 +97,7 @@ EXPERIMENTS = {
         "stage1_dino_lora_ckpt": DINO_LORA_CKPT,
     },
     "G4": {
-        "description": "+ DINOv2 LoRA-MoE (5 experts), end-to-end",
+        "description": "+ DINOv2 LoRA-MoE (6 experts), end-to-end",
         "stage2_config": "configs/ablation/g4_lora_moe.yaml",
         "stage3_config": None,
         "use_classifier": False,
@@ -206,7 +206,7 @@ def train_stage_a(variant: str, dry_run: bool) -> bool:
         desc = "Stage A: DINOv2 LoRA (single)"
     elif variant == "moe":
         config = "configs/dino_lora_moe_classifier.yaml"
-        desc = "Stage A: DINOv2 LoRA-MoE (5 experts)"
+        desc = "Stage A: DINOv2 LoRA-MoE (6 experts)"
     else:
         raise ValueError(f"Unknown Stage A variant: {variant}")
 

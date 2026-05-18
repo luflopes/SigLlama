@@ -1,6 +1,6 @@
-# Stage A: DINOv2 + LoRA-MoE (5 experts) + Dual Supervision
-# Fine-tunes a Mixture-of-Experts LoRA on DINOv2, with one expert
-# per class: Original, Deepfakes, Face2Face, FaceSwap, NeuralTextures.
+# Stage A: DINOv2 + LoRA-MoE (6 experts) + Dual Supervision
+# Fine-tunes a Mixture-of-Experts LoRA on DINOv2, with one expert per
+# class: Original, Deepfakes, Face2Face, FaceShifter, FaceSwap, NeuralTextures.
 
 dinov2_model: "facebook/dinov2-large"
 image_size: 384
@@ -12,7 +12,7 @@ lora_alpha: 32
 lora_dropout: 0.05
 lora_target_modules: ["query", "value"]
 use_moe: true
-num_experts: 5
+num_experts: 6
 router_hidden_dim: 256
 
 # --- Classification heads ---

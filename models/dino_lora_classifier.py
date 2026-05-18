@@ -6,7 +6,7 @@ Supports two modes:
 
 Both modes use dual supervision:
   - Binary head (CLS token -> Real / Fake)
-  - Forgery-type head (CLS token -> Original / Deepfakes / Face2Face / FaceSwap / NeuralTextures)
+  - Forgery-type head (CLS token -> Original / Deepfakes / Face2Face / FaceShifter / FaceSwap / NeuralTextures)
 
 The CLS token is used for classification while the patch tokens are
 available downstream for the VLM adapter (I-MoF pipeline).
@@ -16,8 +16,8 @@ Usage::
     # Single LoRA
     model = DINOv2LoRAClassifier(use_moe=False)
 
-    # LoRA-MoE with 5 experts
-    model = DINOv2LoRAClassifier(use_moe=True, num_experts=5)
+    # LoRA-MoE with 6 experts
+    model = DINOv2LoRAClassifier(use_moe=True, num_experts=6)
 """
 from __future__ import annotations
 
@@ -33,8 +33,9 @@ METHOD_TO_IDX: dict[str, int] = {
     "Original": 0,
     "Deepfakes": 1,
     "Face2Face": 2,
-    "FaceSwap": 3,
-    "NeuralTextures": 4,
+    "FaceShifter": 3,
+    "FaceSwap": 4,
+    "NeuralTextures": 5,
 }
 NUM_METHODS = len(METHOD_TO_IDX)
 
@@ -82,7 +83,7 @@ class DINOv2LoRAClassifier(nn.Module):
         head_hidden_dim: int = 256,
         head_dropout: float = 0.3,
         use_moe: bool = False,
-        num_experts: int = 5,
+        num_experts: int = 6,
         router_hidden_dim: int = 256,
     ):
         super().__init__()

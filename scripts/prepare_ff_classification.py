@@ -50,6 +50,7 @@ logger = logging.getLogger("prepare_ff_cls")
 METHODS_FAKE = [
     ("Deepfakes", "manipulated_sequences/Deepfakes"),
     ("Face2Face", "manipulated_sequences/Face2Face"),
+    ("FaceShifter", "manipulated_sequences/FaceShifter"),
     ("FaceSwap", "manipulated_sequences/FaceSwap"),
     ("NeuralTextures", "manipulated_sequences/NeuralTextures"),
 ]
@@ -80,6 +81,14 @@ def parse_args() -> argparse.Namespace:
                     help="Number of frames to extract per video (evenly spaced)")
     p.add_argument("--face-margin", type=float, default=0.3)
     p.add_argument("--skip-existing", action="store_true")
+    p.add_argument(
+        "--methods", nargs="*", default=None,
+        help=(
+            "Only process these methods (e.g. --methods FaceShifter). "
+            "When set, uses --append mode: extracts frames for the "
+            "specified methods and merges into existing JSONL files."
+        ),
+    )
     return p.parse_args()
 
 
@@ -203,10 +212,41 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # Filter methods if requested
+    if args.methods:
+        valid_names = {name for name, _ in ALL_METHODS}
+        for m in args.methods:
+            if m not in valid_names:
+                logger.error("Unknown method '%s'. Valid: %s", m, sorted(valid_names))
+                sys.exit(1)
+        methods_to_process = [(n, p) for n, p in ALL_METHODS if n in args.methods]
+        logger.info("Processing only: %s (append mode)", [n for n, _ in methods_to_process])
+    else:
+        methods_to_process = ALL_METHODS
+
+    # In append mode, load existing samples first
     all_samples: list[dict] = []
+    if args.methods:
+        for split_name in ("train", "val", "test"):
+            jsonl_path = os.path.join(output_dir, f"{split_name}.jsonl")
+            if os.path.isfile(jsonl_path):
+                with open(jsonl_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            sample = json.loads(line)
+                            if sample.get("method") not in args.methods:
+                                all_samples.append(sample)
+                logger.info(
+                    "Loaded existing %s (kept %d samples, excluding %s)",
+                    jsonl_path,
+                    sum(1 for s in all_samples if s.get("split") == split_name),
+                    args.methods,
+                )
+
     total_skipped = 0
 
-    for method_name, method_subdir in ALL_METHODS:
+    for method_name, method_subdir in methods_to_process:
         is_real = method_name == "Original"
         label = 0 if is_real else 1
 

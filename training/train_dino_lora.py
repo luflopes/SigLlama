@@ -277,7 +277,7 @@ def main() -> None:
         head_hidden_dim=int(cfg.get("head_hidden_dim", 256)),
         head_dropout=float(cfg.get("head_dropout", 0.3)),
         use_moe=use_moe,
-        num_experts=int(cfg.get("num_experts", 5)),
+        num_experts=int(cfg.get("num_experts", 6)),
         router_hidden_dim=int(cfg.get("router_hidden_dim", 256)),
     )
 
@@ -400,7 +400,7 @@ def main() -> None:
                     "lora_alpha": cfg.get("lora_alpha", 32),
                     "lora_target_modules": cfg.get("lora_target_modules", ["query", "value"]),
                     "use_moe": use_moe,
-                    "num_experts": cfg.get("num_experts", 5),
+                    "num_experts": cfg.get("num_experts", 6),
                 },
             }
             if use_moe:

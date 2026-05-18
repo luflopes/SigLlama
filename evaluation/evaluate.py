@@ -237,7 +237,7 @@ def _load_classifier(checkpoint_path: str, dinov2_model: str, device: torch.devi
             lora_alpha=int(ckpt_cfg.get("lora_alpha", 32)),
             lora_target_modules=ckpt_cfg.get("lora_target_modules", ["query", "value"]),
             use_moe=bool(ckpt_cfg.get("use_moe", False)),
-            num_experts=int(ckpt_cfg.get("num_experts", 5)),
+            num_experts=int(ckpt_cfg.get("num_experts", 6)),
         )
         from peft import set_peft_model_state_dict
         set_peft_model_state_dict(classifier.dinov2, ckpt["lora"])
