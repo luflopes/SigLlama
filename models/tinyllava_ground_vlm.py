@@ -37,6 +37,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -88,6 +89,12 @@ class TinyLLaVAGroundVLM(nn.Module):
         Hidden size of the 2-layer MLP (default 2048 = TinyLlama hidden size).
     use_lora, lora_rank, lora_alpha, lora_target_modules, lora_dropout :
         Same semantics as ``FaceGroundVLM``.
+    dino_lora_checkpoint : str | None
+        Path to a Stage A checkpoint (``best.pt``) from
+        ``train_dino_lora.py``.  When provided, LoRA adapters are applied
+        to the DINOv2 backbone with the saved weights and frozen.  This
+        lets the adapter (and downstream VLM) benefit from the fine-tuned
+        DINOv2 features without extra trainable parameters.
     """
 
     def __init__(
@@ -107,6 +114,7 @@ class TinyLLaVAGroundVLM(nn.Module):
         lora_dropout: float = 0.05,
         first_token_loss_weight: float = 1.0,
         train_connector: bool = False,
+        dino_lora_checkpoint: str | None = None,
     ):
         super().__init__()
         self.use_lora = use_lora
@@ -161,6 +169,10 @@ class TinyLLaVAGroundVLM(nn.Module):
                 attn_implementation="sdpa",
             )
             self.dinov2.requires_grad_(False)
+
+            if dino_lora_checkpoint is not None:
+                self._apply_dino_lora(dino_lora_checkpoint)
+
             dino_dim = self.dinov2.config.hidden_size
             self.dino_adapter = DINOv2Adapter(
                 dino_dim=dino_dim, target_dim=llm_hidden,
@@ -194,6 +206,30 @@ class TinyLLaVAGroundVLM(nn.Module):
     # ------------------------------------------------------------------
     # Weight loading helpers
     # ------------------------------------------------------------------
+
+    def _apply_dino_lora(self, checkpoint_path: str) -> None:
+        """Load Stage A LoRA weights into DINOv2 and freeze them."""
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        lora_cfg = ckpt.get("config", {})
+        lora_config = LoraConfig(
+            r=int(lora_cfg.get("lora_rank", 16)),
+            lora_alpha=int(lora_cfg.get("lora_alpha", 32)),
+            target_modules=lora_cfg.get("lora_target_modules", ["query", "value"]),
+            lora_dropout=0.0,
+            bias="none",
+        )
+        self.dinov2 = get_peft_model(self.dinov2, lora_config)
+        if "lora" in ckpt:
+            set_peft_model_state_dict(self.dinov2, ckpt["lora"])
+        self.dinov2.requires_grad_(False)
+        self.dinov2.eval()
+        lora_params = sum(
+            p.numel() for n, p in self.dinov2.named_parameters() if "lora" in n
+        )
+        logger.info(
+            "DINOv2 LoRA loaded from %s (rank=%d, %d params, frozen)",
+            checkpoint_path, lora_config.r, lora_params,
+        )
 
     def _load_tinyllava_checkpoint(self, path: str) -> None:
         ckpt = _load_tinyllava_weights(path)

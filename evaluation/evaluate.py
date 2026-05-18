@@ -219,19 +219,53 @@ class ForcedVerdictProcessor(LogitsProcessor):
 
 
 def _load_classifier(checkpoint_path: str, dinov2_model: str, device: torch.device):
-    """Load the DINOv2 classifier for verdict prediction."""
-    from models.dino_classifier import DINOv2Classifier
-    classifier = DINOv2Classifier(dino_model=dinov2_model)
+    """Load a DINOv2 classifier for verdict prediction.
+
+    Automatically detects whether the checkpoint was produced by the
+    old ``DINOv2Classifier`` (frozen backbone + MLP head) or the new
+    ``DINOv2LoRAClassifier`` (LoRA + dual heads) based on the presence
+    of the ``"lora"`` key in the checkpoint.
+    """
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    classifier.head.load_state_dict(ckpt["head"])
+
+    if "lora" in ckpt:
+        from models.dino_lora_classifier import DINOv2LoRAClassifier
+        ckpt_cfg = ckpt.get("config", {})
+        classifier = DINOv2LoRAClassifier(
+            dino_model=ckpt_cfg.get("dinov2_model", dinov2_model),
+            lora_rank=int(ckpt_cfg.get("lora_rank", 16)),
+            lora_alpha=int(ckpt_cfg.get("lora_alpha", 32)),
+            lora_target_modules=ckpt_cfg.get("lora_target_modules", ["query", "value"]),
+            use_moe=bool(ckpt_cfg.get("use_moe", False)),
+            num_experts=int(ckpt_cfg.get("num_experts", 5)),
+        )
+        from peft import set_peft_model_state_dict
+        set_peft_model_state_dict(classifier.dinov2, ckpt["lora"])
+        classifier.binary_head.load_state_dict(ckpt["binary_head"])
+        classifier.forgery_head.load_state_dict(ckpt["forgery_head"])
+        if classifier.use_moe and "expert_lora_params" in ckpt:
+            classifier.expert_lora_params.load_state_dict(ckpt["expert_lora_params"])
+        if classifier.use_moe and "router" in ckpt:
+            classifier.router.load_state_dict(ckpt["router"])
+        val_acc = ckpt.get("val_metrics", {}).get("binary_accuracy", 0.0)
+        logger.info(
+            "Loaded DINOv2 LoRA classifier from %s (epoch %s, val_bin_acc=%.4f, moe=%s)",
+            checkpoint_path, ckpt.get("epoch", "?"), val_acc,
+            ckpt_cfg.get("use_moe", False),
+        )
+    else:
+        from models.dino_classifier import DINOv2Classifier
+        classifier = DINOv2Classifier(dino_model=dinov2_model)
+        classifier.head.load_state_dict(ckpt["head"])
+        logger.info(
+            "Loaded DINOv2 classifier from %s (epoch %s, val_acc=%.4f)",
+            checkpoint_path,
+            ckpt.get("epoch", "?"),
+            ckpt.get("val_metrics", {}).get("accuracy", 0.0),
+        )
+
     classifier.to(device)
     classifier.eval()
-    logger.info(
-        "Loaded DINOv2 classifier from %s (epoch %s, val_acc=%.4f)",
-        checkpoint_path,
-        ckpt.get("epoch", "?"),
-        ckpt.get("val_metrics", {}).get("accuracy", 0.0),
-    )
     return classifier
 
 

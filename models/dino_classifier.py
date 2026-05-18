@@ -21,7 +21,7 @@ class DINOv2Classifier(nn.Module):
         dino_model: str = "facebook/dinov2-large",
         num_classes: int = 2,
         hidden_dim: int = 256,
-        dropout: float = 0.1,
+        dropout: float = 0.3,
     ):
         super().__init__()
         self.dinov2 = Dinov2Model.from_pretrained(dino_model)

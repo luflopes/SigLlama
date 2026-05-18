@@ -1,26 +1,26 @@
-# G6 — Full pipeline Stage 3: classifier + DINOv2 + aug + localization
-# Continues from G5 Stage 2 checkpoint with localization annotations.
+# G3 — + DINOv2 LoRA (single): features deepfake-aware, end-to-end verdict
+# DINOv2 fine-tuned com LoRA simples (Stage A) + adapter re-treinado (Stage 1').
+# Mede o valor de fine-tuning do backbone visual para deepfakes.
 seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 siglip_model: "google/siglip-so400m-patch14-384"
-dinov2_model: "facebook/dinov2-large"
 tinyllava_weights: "outputs/tinyllava_weights.pt"
 load_tinyllava_weights: true
 use_dino: true
-mof_strategy: "interleave"
 vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-adapter_checkpoint: "outputs/ablation/g5_classifier_aug/stage2/checkpoint-final.pt"
-lora_checkpoint: "outputs/ablation/g5_classifier_aug/stage2/checkpoint-final.pt"
+adapter_checkpoint: "outputs/ablation/g3_lora/stage1/checkpoint-final.pt"
+lora_checkpoint: null
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
 
-train_metadata: "/datasets/deepfake/ddvqa_prepared/train_loc.jsonl"
-val_metadata: "/datasets/deepfake/ddvqa_prepared/val_loc.jsonl"
-test_metadata: "/datasets/deepfake/ddvqa_prepared/test_loc.jsonl"
+train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/test.jsonl"
 image_root: "/datasets/deepfake/ddvqa_prepared/frames"
-max_text_length: 384
+max_text_length: 256
 
 lora_rank: 32
 lora_alpha: 64
@@ -31,13 +31,13 @@ max_epochs: 5
 batch_size: 16
 gradient_accumulation_steps: 4
 num_workers: 2
-balanced_sampling: false
+balanced_sampling: true
 first_token_loss_weight: 1.0
-augmentation: true
+augmentation: false
 
 train_connector: true
 connector_lr: 5.0e-6
-adapter_lr: 2.0e-5
+adapter_lr: 5.0e-5
 lora_lr: 2.0e-5
 warmup_ratio: 0.03
 max_grad_norm: 1.0
@@ -48,4 +48,4 @@ log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/ablation/g6_full/stage3"
+output_dir: "outputs/ablation/g3_lora/stage2"

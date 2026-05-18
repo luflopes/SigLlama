@@ -1,0 +1,41 @@
+# Stage A: DINOv2 + LoRA (single) + Dual Supervision
+# Fine-tunes LoRA adapters on DINOv2 for binary deepfake detection
+# and forgery-type classification.
+
+dinov2_model: "facebook/dinov2-large"
+image_size: 384
+seed: 42
+
+# --- LoRA ---
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: ["query", "value"]
+use_moe: false
+
+# --- Classification heads ---
+head_hidden_dim: 256
+head_dropout: 0.3
+
+# --- Data ---
+data_root: "/datasets/deepfake/ff_classification"
+augmentation: true
+
+# --- Training ---
+batch_size: 24
+num_workers: 4
+lora_lr: 2.0e-4
+head_lr: 1.0e-3
+weight_decay: 1.0e-4
+max_epochs: 30
+forgery_loss_weight: 0.2
+
+# --- LR scheduler ---
+lr_scheduler: "cosine"
+warmup_epochs: 2
+
+# --- Early stopping ---
+early_stopping_patience: 5
+
+# --- Output ---
+output_dir: "outputs/dino_lora_classifier"

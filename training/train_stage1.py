@@ -42,6 +42,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Checkpoint path to resume (adapter + optimizer state)",
     )
+    p.add_argument(
+        "--init-adapter",
+        type=str,
+        default=None,
+        help=(
+            "Warm-start: load adapter weights from this checkpoint but "
+            "reset optimizer/scheduler (start fresh training with better init)"
+        ),
+    )
     return p.parse_args()
 
 
@@ -241,6 +250,13 @@ def main() -> None:
     )
 
     start_step = 0
+    if args.init_adapter:
+        ckpt = torch.load(args.init_adapter, map_location="cpu")
+        model.dino_adapter.load_state_dict(ckpt["adapter"])
+        logger.info(
+            "Warm-start: loaded adapter weights from %s (optimizer/scheduler reset)",
+            args.init_adapter,
+        )
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu")
         model.dino_adapter.load_state_dict(ckpt["adapter"])

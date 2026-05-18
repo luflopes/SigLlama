@@ -53,6 +53,7 @@ def build_model(cfg: dict, *, use_lora: bool | None = None) -> nn.Module:
         lora_dropout=float(cfg.get("lora_dropout", 0.05)),
         first_token_loss_weight=first_token_w,
         train_connector=bool(cfg.get("train_connector", False)),
+        dino_lora_checkpoint=cfg.get("dino_lora_checkpoint"),
     )
     return model
 

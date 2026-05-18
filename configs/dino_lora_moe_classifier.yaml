@@ -1,0 +1,45 @@
+# Stage A: DINOv2 + LoRA-MoE (5 experts) + Dual Supervision
+# Fine-tunes a Mixture-of-Experts LoRA on DINOv2, with one expert
+# per class: Original, Deepfakes, Face2Face, FaceSwap, NeuralTextures.
+
+dinov2_model: "facebook/dinov2-large"
+image_size: 384
+seed: 42
+
+# --- LoRA ---
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: ["query", "value"]
+use_moe: true
+num_experts: 5
+router_hidden_dim: 256
+
+# --- Classification heads ---
+head_hidden_dim: 256
+head_dropout: 0.3
+
+# --- Data ---
+data_root: "/datasets/deepfake/ff_classification"
+augmentation: true
+
+# --- Training ---
+batch_size: 16
+num_workers: 4
+lora_lr: 2.0e-4
+head_lr: 1.0e-3
+router_lr: 1.0e-4
+weight_decay: 1.0e-4
+max_epochs: 30
+forgery_loss_weight: 0.2
+router_loss_weight: 0.1
+
+# --- LR scheduler ---
+lr_scheduler: "cosine"
+warmup_epochs: 2
+
+# --- Early stopping ---
+early_stopping_patience: 5
+
+# --- Output ---
+output_dir: "outputs/dino_lora_moe_classifier"

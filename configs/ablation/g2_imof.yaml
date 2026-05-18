@@ -1,5 +1,5 @@
-# G2 — + DINOv2 I-MoF: end-to-end verdict, with DINOv2, no augmentation
-# Equivalent to Run F Stage 2. Adds DINOv2 patches via I-MoF interleave.
+# G2 — + DINOv2 frozen (I-MoF): features genéricas, end-to-end verdict
+# DINOv2 congelado com adapter pré-treinado no LCS-558K (Stage 1).
 seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -13,6 +13,7 @@ image_size: 384
 
 adapter_checkpoint: "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt"
 lora_checkpoint: null
+dino_lora_checkpoint: null
 
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
 val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
