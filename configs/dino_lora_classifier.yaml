@@ -22,7 +22,7 @@ data_root: "/datasets/deepfake/ff_classification"
 augmentation: true
 
 # --- Training ---
-batch_size: 24
+batch_size: 16
 num_workers: 4
 lora_lr: 2.0e-4
 head_lr: 1.0e-3
