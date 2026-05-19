@@ -230,6 +230,7 @@ def train_adapter(dino_lora_ckpt: str, output_dir: str, dry_run: bool) -> bool:
     overrides = {
         "dino_lora_checkpoint": dino_lora_ckpt,
         "output_dir": output_dir,
+        "max_epochs": 2,
     }
     tmp = _write_temp_config(
         "configs/tinyllava_stage1_adapter.yaml", dry_run, overrides,
