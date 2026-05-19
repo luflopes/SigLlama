@@ -27,15 +27,15 @@ num_workers: 4
 lora_lr: 2.0e-4
 head_lr: 1.0e-3
 weight_decay: 1.0e-4
-max_epochs: 30
+max_epochs: 10
 forgery_loss_weight: 0.2
 
 # --- LR scheduler ---
 lr_scheduler: "cosine"
-warmup_epochs: 2
+warmup_epochs: 1
 
 # --- Early stopping ---
-early_stopping_patience: 5
+early_stopping_patience: 3
 
 # --- Output ---
 output_dir: "outputs/dino_lora_classifier"
