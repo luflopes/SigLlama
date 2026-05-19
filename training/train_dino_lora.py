@@ -35,6 +35,8 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms as T
 from tqdm import tqdm
 
+from peft import get_peft_model_state_dict, set_peft_model_state_dict
+
 from models.dino_lora_classifier import DINOv2LoRAClassifier, METHOD_TO_IDX
 
 logging.basicConfig(
