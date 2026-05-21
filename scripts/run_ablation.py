@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """Ablation study orchestration script.
 
-Trains and evaluates the full experiment grid (G1-G6), saving results
+Trains and evaluates the full experiment grid (G1-G5), saving results
 for each configuration.  The grid is designed so each step adds exactly
 one component, enabling isolated measurement of each contribution.
 
 Pipeline stages:
-  - Stage A:  DINOv2 LoRA/LoRA-MoE + classifier (FF++)
-  - Stage 1': Adapter re-training (LCS-558K) with DINOv2+LoRA
-  - Stage 2:  VLM fine-tuning (DD-VQA)
-  - Stage 3:  Localization (DD-VQA with bboxes)
+  - Stage A: DINOv2 LoRA + dual classifier (FF++)
+  - Stage 2: VLM fine-tuning (DD-VQA) — adapter adapts to LoRA features here
+  - Stage 3: Localization (DD-VQA with bboxes)
 
 Grid:
   G1: Baseline SigLIP only
   G2: + DINOv2 frozen (I-MoF)
   G3: + DINOv2 LoRA single (deepfake-aware features)
-  G4: + DINOv2 LoRA-MoE (6 experts)
-  G5: + Classifier verdict (decoupled from LLM)
-  G6: + Localization (Stage 3)
+  G4: + Classifier verdict (decoupled from LLM)
+  G5: + Localization (Stage 3)
 
 Usage::
 
@@ -28,10 +26,10 @@ Usage::
     python scripts/run_ablation.py --dry-run
 
     # Specific experiments only
-    python scripts/run_ablation.py --experiments G1 G4 G5
+    python scripts/run_ablation.py --experiments G1 G3 G4
 
-    # Skip pre-training stages (reuse existing checkpoints)
-    python scripts/run_ablation.py --skip-stage-a --skip-stage1
+    # Skip Stage A (reuse existing checkpoint)
+    python scripts/run_ablation.py --skip-stage-a
 """
 from __future__ import annotations
 
@@ -57,10 +55,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # ── Checkpoint paths ─────────────────────────────────────────────────
 
 DINO_LORA_CKPT = "outputs/dino_lora_classifier/best.pt"
-DINO_LORA_MOE_CKPT = "outputs/dino_lora_moe_classifier/best.pt"
 ADAPTER_FROZEN_CKPT = "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt"
-ADAPTER_LORA_CKPT = "outputs/ablation/g3_lora/stage1/checkpoint-final.pt"
-ADAPTER_MOE_CKPT = "outputs/ablation/g4_lora_moe/stage1/checkpoint-final.pt"
 
 COOLDOWN_SECS = 120
 
@@ -73,8 +68,7 @@ EXPERIMENTS = {
         "stage3_config": None,
         "use_classifier": False,
         "classifier_ckpt": None,
-        "needs_stage_a": None,
-        "needs_adapter_retrain": False,
+        "needs_stage_a": False,
     },
     "G2": {
         "description": "+ DINOv2 frozen (I-MoF), end-to-end",
@@ -82,8 +76,7 @@ EXPERIMENTS = {
         "stage3_config": None,
         "use_classifier": False,
         "classifier_ckpt": None,
-        "needs_stage_a": None,
-        "needs_adapter_retrain": False,
+        "needs_stage_a": False,
     },
     "G3": {
         "description": "+ DINOv2 LoRA (single), deepfake-aware features",
@@ -91,39 +84,23 @@ EXPERIMENTS = {
         "stage3_config": None,
         "use_classifier": False,
         "classifier_ckpt": None,
-        "needs_stage_a": "lora",
-        "needs_adapter_retrain": True,
-        "adapter_output": "outputs/ablation/g3_lora/stage1",
-        "stage1_dino_lora_ckpt": DINO_LORA_CKPT,
+        "needs_stage_a": True,
     },
     "G4": {
-        "description": "+ DINOv2 LoRA-MoE (6 experts), end-to-end",
-        "stage2_config": "configs/ablation/g4_lora_moe.yaml",
+        "description": "+ Classifier verdict (decoupled from LLM)",
+        "stage2_config": "configs/ablation/g4_classifier.yaml",
         "stage3_config": None,
-        "use_classifier": False,
-        "classifier_ckpt": None,
-        "needs_stage_a": "moe",
-        "needs_adapter_retrain": True,
-        "adapter_output": "outputs/ablation/g4_lora_moe/stage1",
-        "stage1_dino_lora_ckpt": DINO_LORA_MOE_CKPT,
+        "use_classifier": True,
+        "classifier_ckpt": DINO_LORA_CKPT,
+        "needs_stage_a": True,
     },
     "G5": {
-        "description": "+ Classifier verdict (decoupled from LLM)",
-        "stage2_config": "configs/ablation/g5_classifier.yaml",
-        "stage3_config": None,
+        "description": "Full pipeline: G4 + localization (Stage 3)",
+        "stage2_config": "configs/ablation/g4_classifier.yaml",
+        "stage3_config": "configs/ablation/g5_full.yaml",
         "use_classifier": True,
-        "classifier_ckpt": DINO_LORA_MOE_CKPT,
-        "needs_stage_a": "moe",
-        "needs_adapter_retrain": False,
-    },
-    "G6": {
-        "description": "Full pipeline: G5 + localization (Stage 3)",
-        "stage2_config": "configs/ablation/g5_classifier.yaml",
-        "stage3_config": "configs/ablation/g6_full.yaml",
-        "use_classifier": True,
-        "classifier_ckpt": DINO_LORA_MOE_CKPT,
-        "needs_stage_a": "moe",
-        "needs_adapter_retrain": False,
+        "classifier_ckpt": DINO_LORA_CKPT,
+        "needs_stage_a": True,
     },
 }
 
@@ -136,15 +113,11 @@ def parse_args():
     )
     p.add_argument(
         "--experiments", nargs="*", default=None,
-        help="Specific experiments to run (e.g. G1 G4 G5). Default: all.",
+        help="Specific experiments to run (e.g. G1 G3 G4). Default: all.",
     )
     p.add_argument(
         "--skip-stage-a", action="store_true",
-        help="Skip Stage A (LoRA/MoE training). Reuse existing checkpoints.",
-    )
-    p.add_argument(
-        "--skip-stage1", action="store_true",
-        help="Skip Stage 1' (adapter re-training). Reuse existing checkpoints.",
+        help="Skip Stage A (LoRA training). Reuse existing checkpoint.",
     )
     p.add_argument(
         "--cooldown", type=int, default=COOLDOWN_SECS,
@@ -199,51 +172,12 @@ def run_command(cmd: list[str], description: str) -> int:
 
 # ── Stage A: DINOv2 LoRA Training ────────────────────────────────────
 
-def train_stage_a(variant: str, dry_run: bool) -> bool:
-    """Train DINOv2 LoRA or LoRA-MoE classifier. Returns True on success."""
-    if variant == "lora":
-        config = "configs/dino_lora_classifier.yaml"
-        desc = "Stage A: DINOv2 LoRA (single)"
-    elif variant == "moe":
-        config = "configs/dino_lora_moe_classifier.yaml"
-        desc = "Stage A: DINOv2 LoRA-MoE (6 experts)"
-    else:
-        raise ValueError(f"Unknown Stage A variant: {variant}")
-
-    tmp = _write_temp_config(config, dry_run)
+def train_stage_a(dry_run: bool) -> bool:
+    """Train DINOv2 LoRA classifier. Returns True on success."""
+    tmp = _write_temp_config("configs/dino_lora_classifier.yaml", dry_run)
     rc = run_command(
         [sys.executable, "training/train_dino_lora.py", "--config", tmp],
-        desc,
-    )
-    return rc == 0
-
-
-# ── Stage 1': Adapter re-training ────────────────────────────────────
-
-def train_adapter(dino_lora_ckpt: str, output_dir: str, dry_run: bool) -> bool:
-    """Re-train the DINOv2 adapter with LoRA-enhanced features.
-
-    Uses the frozen-DINOv2 adapter as warm-start initialization so the
-    adapter only needs to learn the delta introduced by LoRA, not the
-    full projection from scratch.
-    """
-    overrides = {
-        "dino_lora_checkpoint": dino_lora_ckpt,
-        "output_dir": output_dir,
-        "max_epochs": 2,
-    }
-    tmp = _write_temp_config(
-        "configs/tinyllava_stage1_adapter.yaml", dry_run, overrides,
-    )
-    cmd = [sys.executable, "training/train_stage1.py", "--config", tmp]
-
-    if os.path.isfile(ROOT / ADAPTER_FROZEN_CKPT):
-        cmd.extend(["--init-adapter", ADAPTER_FROZEN_CKPT])
-        logger.info("Warm-starting adapter from %s", ADAPTER_FROZEN_CKPT)
-
-    rc = run_command(
-        cmd,
-        f"Stage 1': Adapter re-train (LoRA={os.path.basename(dino_lora_ckpt)})",
+        "Stage A: DINOv2 LoRA (single)",
     )
     return rc == 0
 
@@ -295,7 +229,7 @@ def evaluate_model(config_path: str, checkpoint: str, split: str,
 # ── Experiment runner ────────────────────────────────────────────────
 
 def run_experiment(name: str, spec: dict, dry_run: bool, cooldown: int,
-                   skip_stage_a: bool, skip_stage1: bool) -> dict:
+                   skip_stage_a: bool) -> dict:
     logger.info("#" * 60)
     logger.info("EXPERIMENT %s: %s", name, spec["description"])
     logger.info("#" * 60)
@@ -306,33 +240,16 @@ def run_experiment(name: str, spec: dict, dry_run: bool, cooldown: int,
     classifier_ckpt = spec.get("classifier_ckpt")
 
     # ── Stage A (if needed) ──
-    stage_a_variant = spec.get("needs_stage_a")
-    if stage_a_variant and not skip_stage_a:
-        ckpt = DINO_LORA_CKPT if stage_a_variant == "lora" else DINO_LORA_MOE_CKPT
-        if not os.path.isfile(ROOT / ckpt):
-            logger.info("Stage A (%s) checkpoint not found — training now.", stage_a_variant)
-            ok = train_stage_a(stage_a_variant, dry_run)
+    if spec.get("needs_stage_a") and not skip_stage_a:
+        if not os.path.isfile(ROOT / DINO_LORA_CKPT):
+            logger.info("Stage A checkpoint not found — training now.")
+            ok = train_stage_a(dry_run)
             if not ok:
-                results["error"] = f"Stage A ({stage_a_variant}) training failed"
+                results["error"] = "Stage A training failed"
                 return results
             time.sleep(cooldown)
         else:
-            logger.info("Stage A (%s) checkpoint found: %s", stage_a_variant, ckpt)
-
-    # ── Stage 1' Adapter re-training (if needed) ──
-    if spec.get("needs_adapter_retrain") and not skip_stage1:
-        adapter_output = spec["adapter_output"]
-        adapter_ckpt_path = f"{adapter_output}/checkpoint-final.pt"
-        dino_lora_ckpt = spec["stage1_dino_lora_ckpt"]
-        if not os.path.isfile(ROOT / adapter_ckpt_path):
-            logger.info("Adapter not found — re-training with LoRA features.")
-            ok = train_adapter(dino_lora_ckpt, adapter_output, dry_run)
-            if not ok:
-                results["error"] = "Stage 1' adapter re-training failed"
-                return results
-            time.sleep(cooldown)
-        else:
-            logger.info("Adapter checkpoint found: %s", adapter_ckpt_path)
+            logger.info("Stage A checkpoint found: %s", DINO_LORA_CKPT)
 
     # ── Stage 2 Training ──
     ok = train_stage(s2_config, f"{name} Stage 2 training", dry_run)
@@ -435,24 +352,18 @@ def main():
             sys.exit(1)
 
     # ── Pre-train Stage A if any experiment needs it ──
-    needed_variants = set()
-    for n in exp_names:
-        v = EXPERIMENTS[n].get("needs_stage_a")
-        if v:
-            needed_variants.add(v)
+    needs_stage_a = any(EXPERIMENTS[n].get("needs_stage_a") for n in exp_names)
 
-    if not args.skip_stage_a:
-        for variant in sorted(needed_variants):
-            ckpt = DINO_LORA_CKPT if variant == "lora" else DINO_LORA_MOE_CKPT
-            if not os.path.isfile(ROOT / ckpt):
-                logger.info("Stage A (%s) checkpoint not found — training now.", variant)
-                ok = train_stage_a(variant, args.dry_run)
-                if not ok:
-                    logger.error("Stage A (%s) training failed! Aborting.", variant)
-                    sys.exit(1)
-                time.sleep(args.cooldown)
-            else:
-                logger.info("Stage A (%s) checkpoint found: %s", variant, ckpt)
+    if needs_stage_a and not args.skip_stage_a:
+        if not os.path.isfile(ROOT / DINO_LORA_CKPT):
+            logger.info("Stage A checkpoint not found — training now.")
+            ok = train_stage_a(args.dry_run)
+            if not ok:
+                logger.error("Stage A training failed! Aborting.")
+                sys.exit(1)
+            time.sleep(args.cooldown)
+        else:
+            logger.info("Stage A checkpoint found: %s", DINO_LORA_CKPT)
 
     # ── Run experiments ──
     all_results: list[dict] = []
@@ -460,7 +371,7 @@ def main():
         spec = EXPERIMENTS[name]
         results = run_experiment(
             name, spec, args.dry_run, args.cooldown,
-            args.skip_stage_a, args.skip_stage1,
+            args.skip_stage_a,
         )
         all_results.append(results)
 

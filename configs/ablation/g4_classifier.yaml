@@ -1,5 +1,5 @@
-# G5 — + Classifier verdict: DINOv2 LoRA-MoE + veredicto desacoplado
-# Mesmo pipeline do G4, mas o veredicto vem do CLS head do DINOv2
+# G4 — + Classifier verdict: DINOv2 LoRA + veredicto desacoplado
+# Mesmo pipeline do G3, mas o veredicto vem do binary head do DINOv2
 # (não do LLM). Mede o valor de desacoplar o veredicto.
 seed: 42
 backbone: "tinyllava"
@@ -12,9 +12,9 @@ vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-adapter_checkpoint: "outputs/ablation/g4_lora_moe/stage1/checkpoint-final.pt"
+adapter_checkpoint: "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt"
 lora_checkpoint: null
-dino_lora_checkpoint: "outputs/dino_lora_moe_classifier/best.pt"
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
 
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train.jsonl"
 val_metadata: "/datasets/deepfake/ddvqa_prepared/val.jsonl"
@@ -48,4 +48,4 @@ log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/ablation/g5_classifier/stage2"
+output_dir: "outputs/ablation/g4_classifier/stage2"

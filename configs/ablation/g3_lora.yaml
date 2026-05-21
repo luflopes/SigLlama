@@ -1,6 +1,6 @@
 # G3 — + DINOv2 LoRA (single): features deepfake-aware, end-to-end verdict
-# DINOv2 fine-tuned com LoRA simples (Stage A) + adapter re-treinado (Stage 1').
-# Mede o valor de fine-tuning do backbone visual para deepfakes.
+# DINOv2 fine-tuned com LoRA (Stage A). Adapter inicializado do Stage 1 (frozen)
+# se adapta às features LoRA durante o Stage 2. Mede o valor de fine-tuning.
 seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -12,7 +12,7 @@ vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-adapter_checkpoint: "outputs/ablation/g3_lora/stage1/checkpoint-final.pt"
+adapter_checkpoint: "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt"
 lora_checkpoint: null
 dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
 
