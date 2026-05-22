@@ -33,7 +33,7 @@ max_epochs: 5
 batch_size: 16
 gradient_accumulation_steps: 4
 num_workers: 2
-balanced_sampling: false
+balanced_sampling: true
 first_token_loss_weight: 1.0
 augmentation: true
 
