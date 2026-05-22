@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ablation study orchestration script.
 
-Trains and evaluates the full experiment grid (G1-G5), saving results
+Trains and evaluates the full experiment grid (G1-G6), saving results
 for each configuration.  The grid is designed so each step adds exactly
 one component, enabling isolated measurement of each contribution.
 
@@ -13,9 +13,10 @@ Pipeline stages:
 Grid:
   G1: Baseline SigLIP only
   G2: + DINOv2 frozen (I-MoF)
-  G3: + DINOv2 LoRA single (deepfake-aware features)
-  G4: + Classifier verdict (decoupled from LLM)
-  G5: + Localization (Stage 3)
+  G3: + DINOv2 LoRA single (deepfake-aware features, end-to-end)
+  G4: + Localization (end-to-end verdict, Stage 3 from G3)
+  G5: + Classifier verdict (decoupled from LLM, no loc)
+  G6: + Classifier + Localization (Stage 3 from G5)
 
 Usage::
 
@@ -26,7 +27,7 @@ Usage::
     python scripts/run_ablation.py --dry-run
 
     # Specific experiments only
-    python scripts/run_ablation.py --experiments G1 G3 G4
+    python scripts/run_ablation.py --experiments G1 G3 G5
 
     # Skip Stage A (reuse existing checkpoint)
     python scripts/run_ablation.py --skip-stage-a
@@ -79,7 +80,7 @@ EXPERIMENTS = {
         "needs_stage_a": False,
     },
     "G3": {
-        "description": "+ DINOv2 LoRA (single), deepfake-aware features",
+        "description": "+ DINOv2 LoRA (single), deepfake-aware features, end-to-end",
         "stage2_config": "configs/ablation/g3_lora.yaml",
         "stage3_config": None,
         "use_classifier": False,
@@ -87,17 +88,25 @@ EXPERIMENTS = {
         "needs_stage_a": True,
     },
     "G4": {
+        "description": "+ Localization (end-to-end verdict, Stage 3 from G3)",
+        "stage2_config": "configs/ablation/g3_lora.yaml",
+        "stage3_config": "configs/ablation/g4_lora_loc.yaml",
+        "use_classifier": False,
+        "classifier_ckpt": None,
+        "needs_stage_a": True,
+    },
+    "G5": {
         "description": "+ Classifier verdict (decoupled from LLM)",
-        "stage2_config": "configs/ablation/g4_classifier.yaml",
+        "stage2_config": "configs/ablation/g5_classifier.yaml",
         "stage3_config": None,
         "use_classifier": True,
         "classifier_ckpt": DINO_LORA_CKPT,
         "needs_stage_a": True,
     },
-    "G5": {
-        "description": "Full pipeline: G4 + localization (Stage 3)",
-        "stage2_config": "configs/ablation/g4_classifier.yaml",
-        "stage3_config": "configs/ablation/g5_full.yaml",
+    "G6": {
+        "description": "Full pipeline: G5 + localization (Stage 3)",
+        "stage2_config": "configs/ablation/g5_classifier.yaml",
+        "stage3_config": "configs/ablation/g6_full.yaml",
         "use_classifier": True,
         "classifier_ckpt": DINO_LORA_CKPT,
         "needs_stage_a": True,

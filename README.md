@@ -48,12 +48,13 @@ Stage A trains DINOv2 with LoRA for deepfake-aware features and classification. 
 ```
 FaceGroundVLM/
 ├── configs/
-│   ├── ablation/                              # Ablation study configs (G1-G5)
+│   ├── ablation/                              # Ablation study configs (G1-G6)
 │   │   ├── g1_baseline.yaml                   # SigLIP only, end-to-end
 │   │   ├── g2_imof.yaml                       # + DINOv2 frozen (I-MoF)
-│   │   ├── g3_lora.yaml                       # + DINOv2 LoRA single
-│   │   ├── g4_classifier.yaml                 # + Classifier verdict (decoupled)
-│   │   └── g5_full.yaml                       # + Localization (Stage 3)
+│   │   ├── g3_lora.yaml                       # + DINOv2 LoRA single (end-to-end)
+│   │   ├── g4_lora_loc.yaml                   # + Localization (end-to-end, from G3)
+│   │   ├── g5_classifier.yaml                 # + Classifier verdict (decoupled)
+│   │   └── g6_full.yaml                       # + Classifier + Localization (from G5)
 │   ├── archived/                              # Legacy / archived configs
 │   ├── dino_classifier.yaml                   # DINOv2 frozen classifier (legacy)
 │   ├── dino_lora_classifier.yaml              # DINOv2 LoRA + dual heads
@@ -88,7 +89,7 @@ FaceGroundVLM/
 │   ├── evaluate.py                            # Full evaluation pipeline (auto-detects classifier type)
 │   └── metrics.py                             # BLEU, ROUGE, CIDEr, IoU
 ├── scripts/
-│   ├── run_ablation.py                        # Ablation study orchestration (G1-G5)
+│   ├── run_ablation.py                        # Ablation study orchestration (G1-G6)
 │   ├── prepare_ddvqa.py                       # DD-VQA data preparation
 │   ├── prepare_ff_classification.py           # FF++ classification data preparation
 │   ├── extract_landmarks.py                   # MediaPipe landmark extraction
@@ -167,16 +168,19 @@ The ablation study adds exactly **one component per step**, enabling isolated me
 | G1 | -- | -- | LLM | no | Baseline (SigLIP only) |
 | G2 | frozen | -- | LLM | no | + generic visual features |
 | G3 | LoRA | single | LLM | no | + deepfake-aware features |
-| G4 | LoRA | single | classifier | no | + decoupled verdict |
-| G5 | LoRA | single | classifier | yes | + spatial localization |
+| G4 | LoRA | single | LLM | yes | + spatial localization (end-to-end) |
+| G5 | LoRA | single | classifier | no | + decoupled verdict |
+| G6 | LoRA | single | classifier | yes | + spatial localization (classifier) |
 
 
 Each step isolates one variable:
 
 - **G1 -> G2**: value of additional visual features (generic DINOv2)
 - **G2 -> G3**: value of fine-tuning the visual backbone for deepfakes
-- **G3 -> G4**: value of decoupling the verdict from the LLM
-- **G4 -> G5**: value of spatial localization
+- **G3 -> G4**: value of spatial localization with end-to-end verdict
+- **G3 -> G5**: value of decoupling the verdict from the LLM
+- **G5 -> G6**: value of spatial localization with classifier verdict
+- **G4 vs G6**: end-to-end vs classifier verdict (both with localization)
 
 ### Running the full grid
 
@@ -188,7 +192,7 @@ python scripts/run_ablation.py --dry-run
 python scripts/run_ablation.py
 
 # Specific experiments only
-python scripts/run_ablation.py --experiments G3 G4
+python scripts/run_ablation.py --experiments G3 G4 G5
 
 # Skip Stage A (reuse existing LoRA checkpoint)
 python scripts/run_ablation.py --skip-stage-a
@@ -196,9 +200,9 @@ python scripts/run_ablation.py --skip-stage-a
 
 The script automatically:
 
-1. Trains DINOv2 LoRA classifier (Stage A, shared across G3-G5)
+1. Trains DINOv2 LoRA classifier (Stage A, shared across G3-G6)
 2. Trains Stage 2 for each experiment (adapter adapts to LoRA features here)
-3. Trains Stage 3 for G5
+3. Trains Stage 3 for G4 and G6
 4. Evaluates **best** and **last** checkpoints on **val** and **test**
 5. Waits 2 minutes between experiments for GPU cool-down
 6. Saves a summary JSON to `outputs/ablation/summary.json`

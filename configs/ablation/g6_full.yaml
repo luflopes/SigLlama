@@ -1,6 +1,6 @@
-# G5 — Full pipeline: G4 + localização (Stage 3)
-# Continua do Stage 2 do G4 com anotações de localização.
-# Mede o valor de localização espacial de regiões manipuladas.
+# G6 — Full pipeline: G5 + localização (Stage 3)
+# Continua do Stage 2 do G5 com anotações de localização.
+# Classifier verdict + localização. Mede o valor de localização com veredicto desacoplado.
 seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -14,8 +14,8 @@ vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-adapter_checkpoint: "outputs/ablation/g4_classifier/stage2/checkpoint-final.pt"
-lora_checkpoint: "outputs/ablation/g4_classifier/stage2/checkpoint-final.pt"
+adapter_checkpoint: "outputs/ablation/g5_classifier/stage2/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g5_classifier/stage2/checkpoint-final.pt"
 dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
 
 train_metadata: "/datasets/deepfake/ddvqa_prepared/train_loc.jsonl"
@@ -33,7 +33,7 @@ max_epochs: 5
 batch_size: 16
 gradient_accumulation_steps: 4
 num_workers: 2
-balanced_sampling: false
+balanced_sampling: true
 first_token_loss_weight: 1.0
 augmentation: true
 
@@ -50,4 +50,4 @@ log_interval: 20
 save_interval: 200
 val_interval: 100
 sample_interval: 100
-output_dir: "outputs/ablation/g5_full/stage3"
+output_dir: "outputs/ablation/g6_full/stage3"
