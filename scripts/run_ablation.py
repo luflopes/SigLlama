@@ -7,16 +7,20 @@ one component, enabling isolated measurement of each contribution.
 
 Pipeline stages:
   - Stage A: DINOv2 LoRA + dual classifier (FF++)
-  - Stage 2: VLM fine-tuning (DD-VQA) — adapter adapts to LoRA features here
+  - Stage 2: VLM fine-tuning (DD-VQA)
   - Stage 3: Localization (DD-VQA with bboxes)
 
 Grid:
-  G1: Baseline SigLIP only
-  G2: + DINOv2 frozen (I-MoF)
-  G3: + DINOv2 LoRA single (deepfake-aware features, end-to-end)
-  G4: + Localization (end-to-end verdict, Stage 3 from G3)
-  G5: + Classifier verdict (decoupled from LLM, no loc)
-  G6: + Classifier + Localization (Stage 3 from G5)
+  G1: Baseline SigLIP only                           [trains Stage 2]
+  G2: + DINOv2 frozen (I-MoF)                        [trains Stage 2]
+  G3: + DINOv2 LoRA (deepfake-aware, end-to-end)     [trains Stage 2]
+  G4: + Localization (end-to-end, Stage 3 from G3)    [trains Stage 3]
+  G5: + Classifier verdict (reuses G3, eval-only)     [eval only]
+  G6: + Classifier + Localization (reuses G4, eval)   [eval only]
+
+Each experiment has its own output directory — nothing is ever overwritten.
+G5 and G6 reuse trained models from G3 and G4 respectively, evaluating
+them with the external DINOv2 classifier verdict instead of re-training.
 
 Usage::
 
@@ -27,7 +31,7 @@ Usage::
     python scripts/run_ablation.py --dry-run
 
     # Specific experiments only
-    python scripts/run_ablation.py --experiments G1 G3 G5
+    python scripts/run_ablation.py --experiments G3 G4
 
     # Skip Stage A (reuse existing checkpoint)
     python scripts/run_ablation.py --skip-stage-a
@@ -61,53 +65,48 @@ ADAPTER_FROZEN_CKPT = "outputs/tinyllava_stage1_adapter_full/checkpoint-final.pt
 COOLDOWN_SECS = 120
 
 # ── Experiment grid ──────────────────────────────────────────────────
+#
+# Two experiment types:
+#   - "train_config": trains a model using this config (has its own output_dir)
+#   - "reuses": eval-only — evaluates the model from another experiment
+#     with a different setting (e.g. classifier verdict)
 
 EXPERIMENTS = {
     "G1": {
         "description": "Baseline: SigLIP only, end-to-end, no DINOv2",
-        "stage2_config": "configs/ablation/g1_baseline.yaml",
-        "stage3_config": None,
-        "use_classifier": False,
+        "train_config": "configs/ablation/g1_baseline.yaml",
         "classifier_ckpt": None,
         "needs_stage_a": False,
     },
     "G2": {
         "description": "+ DINOv2 frozen (I-MoF), end-to-end",
-        "stage2_config": "configs/ablation/g2_imof.yaml",
-        "stage3_config": None,
-        "use_classifier": False,
+        "train_config": "configs/ablation/g2_imof.yaml",
         "classifier_ckpt": None,
         "needs_stage_a": False,
     },
     "G3": {
         "description": "+ DINOv2 LoRA (single), deepfake-aware features, end-to-end",
-        "stage2_config": "configs/ablation/g3_lora.yaml",
-        "stage3_config": None,
-        "use_classifier": False,
+        "train_config": "configs/ablation/g3_lora.yaml",
         "classifier_ckpt": None,
         "needs_stage_a": True,
     },
     "G4": {
         "description": "+ Localization (end-to-end verdict, Stage 3 from G3)",
-        "stage2_config": "configs/ablation/g3_lora.yaml",
-        "stage3_config": "configs/ablation/g4_lora_loc.yaml",
-        "use_classifier": False,
+        "train_config": "configs/ablation/g4_lora_loc.yaml",
         "classifier_ckpt": None,
         "needs_stage_a": True,
     },
     "G5": {
-        "description": "+ Classifier verdict (decoupled from LLM)",
-        "stage2_config": "configs/ablation/g5_classifier.yaml",
-        "stage3_config": None,
-        "use_classifier": True,
+        "description": "+ Classifier verdict (G3 model, eval-only with classifier)",
+        "reuses": "G3",
+        "eval_output_dir": "outputs/ablation/g5_classifier/evaluation",
         "classifier_ckpt": DINO_LORA_CKPT,
         "needs_stage_a": True,
     },
     "G6": {
-        "description": "Full pipeline: G5 + localization (Stage 3)",
-        "stage2_config": "configs/ablation/g5_classifier.yaml",
-        "stage3_config": "configs/ablation/g6_full.yaml",
-        "use_classifier": True,
+        "description": "+ Classifier + Localization (G4 model, eval-only with classifier)",
+        "reuses": "G4",
+        "eval_output_dir": "outputs/ablation/g6_full/evaluation",
         "classifier_ckpt": DINO_LORA_CKPT,
         "needs_stage_a": True,
     },
@@ -191,9 +190,10 @@ def train_stage_a(dry_run: bool) -> bool:
     return rc == 0
 
 
-# ── Stage 2/3: VLM Training ─────────────────────────────────────────
+# ── Training ─────────────────────────────────────────────────────────
 
-def train_stage(config_path: str, description: str, dry_run: bool) -> bool:
+def train_model(config_path: str, description: str, dry_run: bool) -> bool:
+    """Train a model using train_stage2.py. Returns True on success."""
     tmp = _write_temp_config(config_path, dry_run)
     rc = run_command(
         [sys.executable, "training/train_stage2.py", "--config", tmp],
@@ -235,6 +235,23 @@ def evaluate_model(config_path: str, checkpoint: str, split: str,
     return None
 
 
+def _evaluate_checkpoints(config_path: str, output_dir: str, eval_base: str,
+                          dry_run: bool, classifier_ckpt: str | None,
+                          results: dict, prefix: str = "") -> None:
+    """Evaluate best and final checkpoints on val and test splits."""
+    for ckpt_name in ("checkpoint-best.pt", "checkpoint-final.pt"):
+        tag = "best" if "best" in ckpt_name else "last"
+        ckpt_path = f"{output_dir}/{ckpt_name}"
+        for split in ("val", "test"):
+            eval_dir = f"{eval_base}/{prefix}{tag}_{split}"
+            r = evaluate_model(
+                config_path, ckpt_path, split, eval_dir, dry_run,
+                classifier_ckpt,
+            )
+            if r:
+                results[f"{prefix}{tag}_{split}"] = r
+
+
 # ── Experiment runner ────────────────────────────────────────────────
 
 def run_experiment(name: str, spec: dict, dry_run: bool, cooldown: int,
@@ -244,8 +261,6 @@ def run_experiment(name: str, spec: dict, dry_run: bool, cooldown: int,
     logger.info("#" * 60)
 
     results = {"name": name, "description": spec["description"]}
-    s2_config = spec["stage2_config"]
-    s3_config = spec["stage3_config"]
     classifier_ckpt = spec.get("classifier_ckpt")
 
     # ── Stage A (if needed) ──
@@ -260,51 +275,42 @@ def run_experiment(name: str, spec: dict, dry_run: bool, cooldown: int,
         else:
             logger.info("Stage A checkpoint found: %s", DINO_LORA_CKPT)
 
-    # ── Stage 2 Training ──
-    ok = train_stage(s2_config, f"{name} Stage 2 training", dry_run)
-    if not ok:
-        results["error"] = "Stage 2 training failed"
+    # ── Eval-only experiment (reuses another experiment's model) ──
+    reuses = spec.get("reuses")
+    if reuses:
+        ref_spec = EXPERIMENTS[reuses]
+        ref_config = ref_spec["train_config"]
+        with open(ROOT / ref_config) as f:
+            ref_cfg = yaml.safe_load(f)
+        ref_output = ref_cfg["output_dir"]
+        eval_base = spec["eval_output_dir"]
+
+        logger.info(
+            "Eval-only: reusing model from %s (%s), evaluating with classifier",
+            reuses, ref_output,
+        )
+        _evaluate_checkpoints(
+            ref_config, ref_output, eval_base, dry_run, classifier_ckpt,
+            results,
+        )
         return results
 
-    with open(ROOT / s2_config) as f:
-        s2_cfg = yaml.safe_load(f)
-    s2_out = s2_cfg["output_dir"]
-    eval_base = str(Path(s2_out).parent / "evaluation")
+    # ── Training experiment ──
+    train_config = spec["train_config"]
+    ok = train_model(train_config, f"{name} training", dry_run)
+    if not ok:
+        results["error"] = "Training failed"
+        return results
 
-    # ── Stage 2 Evaluation ──
-    for ckpt_name in ("checkpoint-best.pt", "checkpoint-final.pt"):
-        tag = "best" if "best" in ckpt_name else "last"
-        ckpt_path = f"{s2_out}/{ckpt_name}"
-        for split in ("val", "test"):
-            eval_dir = f"{eval_base}/s2_{tag}_{split}"
-            r = evaluate_model(
-                s2_config, ckpt_path, split, eval_dir, dry_run, classifier_ckpt,
-            )
-            if r:
-                results[f"s2_{tag}_{split}"] = r
+    with open(ROOT / train_config) as f:
+        cfg = yaml.safe_load(f)
+    output_dir = cfg["output_dir"]
+    eval_base = str(Path(output_dir).parent / "evaluation")
 
-    # ── Stage 3 (if applicable) ──
-    if s3_config:
-        time.sleep(cooldown)
-        ok = train_stage(s3_config, f"{name} Stage 3 training", dry_run)
-        if ok:
-            with open(ROOT / s3_config) as f:
-                s3_cfg = yaml.safe_load(f)
-            s3_out = s3_cfg["output_dir"]
-            eval_base_s3 = str(Path(s3_out).parent / "evaluation")
-
-            for ckpt_name in ("checkpoint-best.pt", "checkpoint-final.pt"):
-                tag = "best" if "best" in ckpt_name else "last"
-                ckpt_path = f"{s3_out}/{ckpt_name}"
-                for split in ("val", "test"):
-                    eval_dir = f"{eval_base_s3}/s3_{tag}_{split}"
-                    r = evaluate_model(
-                        s3_config, ckpt_path, split, eval_dir, dry_run, classifier_ckpt,
-                    )
-                    if r:
-                        results[f"s3_{tag}_{split}"] = r
-        else:
-            results["error_s3"] = "Stage 3 training failed"
+    _evaluate_checkpoints(
+        train_config, output_dir, eval_base, dry_run, classifier_ckpt,
+        results,
+    )
 
     return results
 
@@ -320,27 +326,28 @@ def write_summary(all_results: list[dict], output_path: Path) -> None:
     logger.info("\n" + "=" * 80)
     logger.info("ABLATION STUDY RESULTS SUMMARY")
     logger.info("=" * 80)
-    header = f"{'Exp':<5} {'Ckpt':<8} {'Split':<5} {'Acc':>7} {'F1':>7} {'BLEU4':>7} {'ROUGE':>7} {'CIDEr':>7}"
+    header = (
+        f"{'Exp':<5} {'Ckpt':<8} {'Split':<5} "
+        f"{'Acc':>7} {'F1':>7} {'BLEU4':>7} {'ROUGE':>7} {'CIDEr':>7}"
+    )
     logger.info(header)
     logger.info("-" * 80)
 
     for res in all_results:
         name = res["name"]
         for key in sorted(res.keys()):
-            if key.startswith("s2_") or key.startswith("s3_"):
-                parts = key.split("_")
-                stage = parts[0]
-                tag = parts[1]
-                split = parts[2]
+            if "_test" in key or "_val" in key:
+                parts = key.rsplit("_", 1)
+                tag = parts[0]
+                split = parts[1]
                 metrics = res[key]
                 acc = metrics.get("accuracy", 0)
                 f1 = metrics.get("f1", 0)
                 bleu4 = metrics.get("bleu4", 0)
                 rouge = metrics.get("rouge_l", 0)
                 cider = metrics.get("cider", 0)
-                label = f"{stage}_{tag}"
                 logger.info(
-                    f"{name:<5} {label:<8} {split:<5} {acc:>7.4f} {f1:>7.4f} "
+                    f"{name:<5} {tag:<8} {split:<5} {acc:>7.4f} {f1:>7.4f} "
                     f"{bleu4:>7.4f} {rouge:>7.4f} {cider:>7.4f}"
                 )
     logger.info("=" * 80)
@@ -357,8 +364,28 @@ def main():
     exp_names = args.experiments or list(EXPERIMENTS.keys())
     for name in exp_names:
         if name not in EXPERIMENTS:
-            logger.error("Unknown experiment: %s (available: %s)", name, list(EXPERIMENTS.keys()))
+            logger.error(
+                "Unknown experiment: %s (available: %s)",
+                name, list(EXPERIMENTS.keys()),
+            )
             sys.exit(1)
+
+    # Validate that eval-only experiments have their dependencies
+    for name in exp_names:
+        spec = EXPERIMENTS[name]
+        reuses = spec.get("reuses")
+        if reuses and reuses not in exp_names:
+            ref_config = EXPERIMENTS[reuses]["train_config"]
+            with open(ROOT / ref_config) as f:
+                ref_cfg = yaml.safe_load(f)
+            ref_ckpt = f"{ref_cfg['output_dir']}/checkpoint-best.pt"
+            if not os.path.isfile(ROOT / ref_ckpt):
+                logger.error(
+                    "%s reuses %s but checkpoint not found: %s. "
+                    "Run %s first or include it in --experiments.",
+                    name, reuses, ref_ckpt, reuses,
+                )
+                sys.exit(1)
 
     # ── Pre-train Stage A if any experiment needs it ──
     needs_stage_a = any(EXPERIMENTS[n].get("needs_stage_a") for n in exp_names)

@@ -49,12 +49,11 @@ Stage A trains DINOv2 with LoRA for deepfake-aware features and classification. 
 FaceGroundVLM/
 ├── configs/
 │   ├── ablation/                              # Ablation study configs (G1-G6)
-│   │   ├── g1_baseline.yaml                   # SigLIP only, end-to-end
-│   │   ├── g2_imof.yaml                       # + DINOv2 frozen (I-MoF)
-│   │   ├── g3_lora.yaml                       # + DINOv2 LoRA single (end-to-end)
-│   │   ├── g4_lora_loc.yaml                   # + Localization (end-to-end, from G3)
-│   │   ├── g5_classifier.yaml                 # + Classifier verdict (decoupled)
-│   │   └── g6_full.yaml                       # + Classifier + Localization (from G5)
+│   │   ├── g1_baseline.yaml                   # G1: SigLIP only, end-to-end
+│   │   ├── g2_imof.yaml                       # G2: + DINOv2 frozen (I-MoF)
+│   │   ├── g3_lora.yaml                       # G3: + DINOv2 LoRA (end-to-end)
+│   │   └── g4_lora_loc.yaml                   # G4: + Localization (from G3)
+│   │                                          # G5/G6: eval-only (reuse G3/G4 with classifier)
 │   ├── archived/                              # Legacy / archived configs
 │   ├── dino_classifier.yaml                   # DINOv2 frozen classifier (legacy)
 │   ├── dino_lora_classifier.yaml              # DINOv2 LoRA + dual heads
@@ -163,14 +162,14 @@ The evaluation script auto-detects whether the classifier checkpoint is from the
 The ablation study adds exactly **one component per step**, enabling isolated measurement of each contribution.
 
 
-| Run | DINOv2 | LoRA | Verdict | Loc | What it measures |
-|-----|--------|------|---------|-----|------------------|
-| G1 | -- | -- | LLM | no | Baseline (SigLIP only) |
-| G2 | frozen | -- | LLM | no | + generic visual features |
-| G3 | LoRA | single | LLM | no | + deepfake-aware features |
-| G4 | LoRA | single | LLM | yes | + spatial localization (end-to-end) |
-| G5 | LoRA | single | classifier | no | + decoupled verdict |
-| G6 | LoRA | single | classifier | yes | + spatial localization (classifier) |
+| Run | DINOv2 | LoRA | Verdict | Loc | Training | What it measures |
+|-----|--------|------|---------|-----|----------|------------------|
+| G1 | -- | -- | LLM | no | Stage 2 | Baseline (SigLIP only) |
+| G2 | frozen | -- | LLM | no | Stage 2 | + generic visual features |
+| G3 | LoRA | single | LLM | no | Stage 2 | + deepfake-aware features |
+| G4 | LoRA | single | LLM | yes | Stage 3 (from G3) | + spatial localization |
+| G5 | LoRA | single | classifier | no | eval-only (= G3) | + decoupled verdict |
+| G6 | LoRA | single | classifier | yes | eval-only (= G4) | + localization + classifier |
 
 
 Each step isolates one variable:
@@ -201,11 +200,13 @@ python scripts/run_ablation.py --skip-stage-a
 The script automatically:
 
 1. Trains DINOv2 LoRA classifier (Stage A, shared across G3-G6)
-2. Trains Stage 2 for each experiment (adapter adapts to LoRA features here)
-3. Trains Stage 3 for G4 and G6
+2. Trains G1/G2/G3 (Stage 2) and G4 (Stage 3, from G3 checkpoint)
+3. Evaluates G5/G6 by reusing G3/G4 models with classifier verdict (no extra training)
 4. Evaluates **best** and **last** checkpoints on **val** and **test**
 5. Waits 2 minutes between experiments for GPU cool-down
 6. Saves a summary JSON to `outputs/ablation/summary.json`
+
+Each experiment writes to its own output directory — nothing is overwritten.
 
 ## Data Augmentation
 
