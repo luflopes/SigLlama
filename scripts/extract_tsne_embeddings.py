@@ -4,13 +4,24 @@ Produces two sets of embeddings (with LoRA / frozen) so the notebook can
 compare how the LoRA-finetuned backbone separates real vs fake in the
 embedding space.
 
-Usage (on the GPU server)::
+Supports two data formats:
 
-    python scripts/extract_tsne_embeddings.py \
-        --checkpoint outputs/dino_lora_classifier/best.pt \
-        --data-root /datasets/deepfake/ff_classification \
-        --split val \
-        --output outputs/analysis/tsne_embeddings.npz
+1. **FF++ classification** (``--format ff``)::
+
+       python scripts/extract_tsne_embeddings.py \\
+           --checkpoint outputs/dino_lora_classifier/best.pt \\
+           --metadata /datasets/deepfake/ff_classification/val.jsonl \\
+           --images-dir /datasets/deepfake/ff_classification/frames \\
+           --format ff --output outputs/analysis/tsne_embeddings.npz
+
+2. **DD-VQA** (``--format ddvqa``, default) — uses the test split and
+   deduplicates by image so each frame appears once::
+
+       python scripts/extract_tsne_embeddings.py \\
+           --checkpoint outputs/dino_lora_classifier/best.pt \\
+           --metadata /datasets/deepfake/ddvqa_prepared/test.jsonl \\
+           --images-dir /datasets/deepfake/ddvqa_prepared/frames \\
+           --output outputs/analysis/tsne_embeddings.npz
 
 The output ``.npz`` contains:
     embeddings_lora   : float32 [N, D]   – CLS tokens with LoRA active
@@ -41,22 +52,58 @@ _IMAGENET_STD = [0.229, 0.224, 0.225]
 IDX_TO_METHOD = {v: k for k, v in METHOD_TO_IDX.items()}
 
 
-class SimpleFFDataset(Dataset):
-    """Minimal FF++ dataset that returns pixel_values, label, method."""
+def _load_samples(metadata_path: str, fmt: str) -> list[dict]:
+    """Load JSONL and return normalised dicts with keys: image, label, method.
 
-    def __init__(self, metadata_path: str, image_root: str, image_size: int = 384):
+    For DD-VQA format, deduplicates by image name (each image has multiple
+    QA pairs but we only need one embedding per image).
+    """
+    raw = []
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                raw.append(json.loads(line))
+
+    if fmt == "ff":
+        return [
+            {"image": r["image"], "label": int(r["label"]), "method": r.get("method", "unknown")}
+            for r in raw
+        ]
+
+    # DD-VQA: deduplicate by image, derive label from is_real / label field
+    seen: set[str] = set()
+    samples: list[dict] = []
+    for r in raw:
+        img = r["image"]
+        if img in seen:
+            continue
+        seen.add(img)
+
+        if "is_real" in r:
+            label = 0 if r["is_real"] else 1
+        elif "label" in r:
+            lbl = str(r["label"]).lower()
+            label = 0 if lbl in ("real", "0", "true") else 1
+        else:
+            label = -1
+
+        method = r.get("method", "unknown")
+        samples.append({"image": img, "label": label, "method": method})
+    return samples
+
+
+class ImageListDataset(Dataset):
+    """Lightweight dataset over a list of {image, label, method} dicts."""
+
+    def __init__(self, samples: list[dict], image_root: str, image_size: int = 384):
+        self.samples = samples
         self.image_root = image_root
         self.transform = T.Compose([
             T.Resize((image_size, image_size)),
             T.ToTensor(),
             T.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
         ])
-        self.samples: list[dict] = []
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self.samples.append(json.loads(line))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -66,9 +113,7 @@ class SimpleFFDataset(Dataset):
         img_path = os.path.join(self.image_root, row["image"])
         img = Image.open(img_path).convert("RGB")
         pixel_values = self.transform(img)
-        binary_label = int(row["label"])
-        method = row.get("method", "unknown")
-        return pixel_values, binary_label, method
+        return pixel_values, int(row["label"]), row["method"]
 
 
 def extract_embeddings(
@@ -108,10 +153,12 @@ def extract_embeddings(
 def main():
     parser = argparse.ArgumentParser(description="Extract DINOv2 embeddings for t-SNE")
     parser.add_argument("--checkpoint", required=True, help="Path to DINOv2 LoRA classifier .pt")
-    parser.add_argument("--data-root", default="/datasets/deepfake/ff_classification",
-                        help="FF++ classification data root")
-    parser.add_argument("--split", default="val", choices=["train", "val"],
-                        help="Which split to use")
+    parser.add_argument("--metadata", required=True,
+                        help="Path to JSONL metadata (e.g. test.jsonl)")
+    parser.add_argument("--images-dir", required=True,
+                        help="Directory containing the images referenced in metadata")
+    parser.add_argument("--format", default="ddvqa", choices=["ddvqa", "ff"],
+                        help="Metadata format: ddvqa (default) or ff (FF++ classification)")
     parser.add_argument("--image-size", type=int, default=384)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--output", default="outputs/analysis/tsne_embeddings.npz")
@@ -142,9 +189,9 @@ def main():
     model = model.to(device)
     model.eval()
 
-    metadata_path = os.path.join(args.data_root, f"{args.split}.jsonl")
-    image_root = os.path.join(args.data_root, "frames")
-    dataset = SimpleFFDataset(metadata_path, image_root, args.image_size)
+    samples = _load_samples(args.metadata, args.format)
+    print(f"Loaded {len(samples)} unique images from {args.metadata} (format={args.format})")
+    dataset = ImageListDataset(samples, args.images_dir, args.image_size)
 
     if args.max_samples and args.max_samples < len(dataset):
         indices = torch.randperm(len(dataset))[:args.max_samples].tolist()
