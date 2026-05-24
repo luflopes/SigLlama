@@ -90,14 +90,57 @@ def extract_attention(
     Returns shape [B, num_patches].
     """
     model.eval()
+
+    # The PEFT wrapper may swallow output_attentions; hook into the last
+    # self-attention layer directly to capture the attention weights.
+    base_model = model.dinov2.base_model.model
+    last_layer = base_model.encoder.layer[-1]
+    attn_module = last_layer.attention.attention
+
+    captured = {}
+
+    def _hook(module, input, output):
+        # Dinov2SdpaSelfAttention stores (context_layer, attn_weights) when
+        # output_attentions=True, but with SDPA it may only return context.
+        # We compute attention manually from Q, K instead.
+        pass
+
+    # Compute attention weights from Q/K of last layer
     with torch.no_grad():
-        outputs = model.dinov2(
-            pixel_values=pixel_values,
-            output_attentions=True,
-        )
-    last_attn = outputs.attentions[-1]  # [B, num_heads, seq_len, seq_len]
-    cls_attn = last_attn[:, :, 0, 1:]  # [B, num_heads, num_patches]
-    avg_attn = cls_attn.mean(dim=1)     # [B, num_patches]
+        # First, run the full model up to the last layer to get hidden states
+        embeddings_output = base_model.embeddings(pixel_values)
+        hidden_states = embeddings_output
+
+        # Pass through all layers except the last
+        for layer in base_model.encoder.layer[:-1]:
+            layer_output = layer(hidden_states)
+            hidden_states = layer_output[0]
+
+        # For the last layer, compute attention manually
+        last_norm = last_layer.norm1 if hasattr(last_layer, 'norm1') else None
+        if last_norm is not None:
+            normed = last_norm(hidden_states)
+        else:
+            normed = hidden_states
+
+        # Get Q, K from the attention module
+        mixed_query = attn_module.query(normed)
+        mixed_key = attn_module.key(normed)
+
+        num_heads = attn_module.num_attention_heads
+        head_dim = attn_module.attention_head_size
+        batch_size = mixed_query.size(0)
+
+        # Reshape: [B, seq_len, num_heads, head_dim] -> [B, num_heads, seq_len, head_dim]
+        query = mixed_query.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+        key = mixed_key.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
+
+        attn_weights = torch.matmul(query, key.transpose(-1, -2)) / (head_dim ** 0.5)
+        attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1)
+
+    # CLS token (index 0) attending to patch tokens (index 1:)
+    cls_attn = attn_weights[:, :, 0, 1:]  # [B, num_heads, num_patches]
+    avg_attn = cls_attn.mean(dim=1)        # [B, num_patches]
     return avg_attn.cpu().numpy()
 
 
