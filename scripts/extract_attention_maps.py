@@ -116,9 +116,22 @@ def main():
     print(f"Device: {device}")
 
     print("Loading model...")
-    model = DINOv2LoRAClassifier(use_moe=False)
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt)
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+
+    ckpt_cfg = ckpt.get("config", {})
+    model = DINOv2LoRAClassifier(
+        dino_model=ckpt_cfg.get("dinov2_model", "facebook/dinov2-large"),
+        lora_rank=ckpt_cfg.get("lora_rank", 16),
+        lora_alpha=ckpt_cfg.get("lora_alpha", 32),
+        use_moe=ckpt_cfg.get("use_moe", False),
+    )
+
+    from peft import set_peft_model_state_dict
+    if "lora" in ckpt:
+        set_peft_model_state_dict(model.dinov2, ckpt["lora"])
+    model.binary_head.load_state_dict(ckpt["binary_head"])
+    model.forgery_head.load_state_dict(ckpt["forgery_head"])
+
     model = model.to(device)
     model.eval()
 
