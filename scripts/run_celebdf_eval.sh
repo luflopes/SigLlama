@@ -16,7 +16,7 @@ OUTPUT_DIR="/datasets/deepfake/celebdf_prepared"
 NUM_FRAMES="${1:-32}"
 
 echo "=== Step 1: Extract frames (num_frames=${NUM_FRAMES}) ==="
-python scripts/prepare_celebdf.py \
+/home/lucasfl/repos/SigLlama/venv/bin/python scripts/prepare_celebdf.py \
     --celebdf-root "$CELEBDF_ROOT" \
     --output-dir "$OUTPUT_DIR" \
     --num-frames "$NUM_FRAMES" \
@@ -24,7 +24,7 @@ python scripts/prepare_celebdf.py \
 
 echo ""
 echo "=== Step 2: Evaluate G3 (DINOv2 LoRA, end-to-end verdict) ==="
-python evaluation/evaluate.py \
+/home/lucasfl/repos/SigLlama/venv/bin/python evaluation/evaluate.py \
     --config configs/cross_dataset/celebdf_g3_lora.yaml \
     --checkpoint outputs/ablation/g3_lora/stage2/checkpoint-final.pt \
     --split test \
@@ -33,7 +33,7 @@ python evaluation/evaluate.py \
 
 echo ""
 echo "=== Step 3: Evaluate G4 (DINOv2 LoRA + Localization) ==="
-python evaluation/evaluate.py \
+/home/lucasfl/repos/SigLlama/venv/bin/python evaluation/evaluate.py \
     --config configs/cross_dataset/celebdf_g4_lora_loc.yaml \
     --checkpoint outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt \
     --split test \
@@ -42,10 +42,10 @@ python evaluation/evaluate.py \
 
 echo ""
 echo "=== Step 4: Aggregate results (frame + video level) ==="
-python scripts/aggregate_video_predictions.py \
+/home/lucasfl/repos/SigLlama/venv/bin/python scripts/aggregate_video_predictions.py \
     --predictions outputs/cross_dataset/celebdf_g3_lora/evaluation/predictions.jsonl
 
-python scripts/aggregate_video_predictions.py \
+/home/lucasfl/repos/SigLlama/venv/bin/python scripts/aggregate_video_predictions.py \
     --predictions outputs/cross_dataset/celebdf_g4_lora_loc/evaluation/predictions.jsonl
 
 echo ""
