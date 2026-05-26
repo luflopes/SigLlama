@@ -1,0 +1,28 @@
+# Cross-dataset evaluation: G4 (DINOv2 LoRA + Localization) on Celeb-DF-v2 test set
+seed: 42
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+dinov2_model: "facebook/dinov2-large"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+adapter_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
+
+test_metadata: "/datasets/deepfake/celebdf_prepared/test.jsonl"
+image_root: "/datasets/deepfake/celebdf_prepared/frames"
+max_text_length: 384
+
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules: ["q_proj", "v_proj"]
+lora_dropout: 0.05
+
+output_dir: "outputs/cross_dataset/celebdf_g4_lora_loc"

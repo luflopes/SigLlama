@@ -91,6 +91,13 @@ def parse_args():
         "--max-eval-samples", type=int, default=None,
         help="Limit evaluation to this many samples (useful for dry-run).",
     )
+    p.add_argument(
+        "--export-scores", action="store_true",
+        help=(
+            "Export verdict_score (log-prob difference fake-real) per sample "
+            "in predictions.jsonl for ROC-AUC computation."
+        ),
+    )
     return p.parse_args()
 
 
@@ -180,6 +187,53 @@ class VerdictPrefixProcessor(LogitsProcessor):
             mask[allowed_t] = out[b, allowed_t]
             out[b] = mask
         return out
+
+
+def _build_verdict_token_sets(tokenizer) -> tuple[list[int], list[int]]:
+    """Return (real_first_token_ids, fake_first_token_ids).
+
+    Tokenises the verdict surface forms and collects the first token of
+    each path, grouped by real vs fake.
+    """
+    real_ids: set[int] = set()
+    fake_ids: set[int] = set()
+    for surface in (" Real", " real"):
+        ids = tokenizer.encode(surface, add_special_tokens=False)
+        if ids:
+            real_ids.add(ids[0])
+    for surface in (" Fake", " fake"):
+        ids = tokenizer.encode(surface, add_special_tokens=False)
+        if ids:
+            fake_ids.add(ids[0])
+    return sorted(real_ids), sorted(fake_ids)
+
+
+def _compute_verdict_score(
+    first_step_logits: torch.Tensor,
+    real_token_ids: list[int],
+    fake_token_ids: list[int],
+) -> list[float]:
+    """Compute a continuous fake-vs-real score from first-token logits.
+
+    Returns a score per batch element where higher = more likely fake.
+    Score = log P(fake) - log P(real) computed over the restricted
+    vocabulary of verdict first-tokens.
+    """
+    all_ids = sorted(set(real_token_ids + fake_token_ids))
+    if not all_ids or not real_token_ids or not fake_token_ids:
+        return [0.0] * first_step_logits.shape[0]
+
+    ids_tensor = torch.tensor(all_ids, device=first_step_logits.device)
+    selected_logits = first_step_logits[:, ids_tensor]
+    log_probs = torch.log_softmax(selected_logits, dim=-1)
+
+    real_positions = [all_ids.index(tid) for tid in real_token_ids]
+    fake_positions = [all_ids.index(tid) for tid in fake_token_ids]
+
+    real_lp = torch.logsumexp(log_probs[:, real_positions], dim=-1)
+    fake_lp = torch.logsumexp(log_probs[:, fake_positions], dim=-1)
+    scores = (fake_lp - real_lp).cpu().tolist()
+    return scores
 
 
 class ForcedVerdictProcessor(LogitsProcessor):
@@ -353,6 +407,17 @@ def main():
             _verdict_token_map[v] = ids
             logger.info("Verdict '%s' -> token ids %s", v, ids)
 
+    # ---- Verdict score setup (for AUC) ----
+    export_scores = getattr(args, "export_scores", False)
+    real_token_ids: list[int] = []
+    fake_token_ids: list[int] = []
+    if export_scores:
+        real_token_ids, fake_token_ids = _build_verdict_token_sets(tokenizer)
+        logger.info(
+            "Verdict score export enabled: real_tokens=%s, fake_tokens=%s",
+            real_token_ids, fake_token_ids,
+        )
+
     predictions: list[str] = []
     references: list[str] = []
     pred_labels: list[str] = []
@@ -428,8 +493,12 @@ def main():
         elif first_token_processor is not None:
             gen_overrides["logits_processor"] = first_token_processor
 
+        if export_scores:
+            gen_overrides["output_scores"] = True
+            gen_overrides["return_dict_in_generate"] = True
+
         with torch.no_grad():
-            gen_ids = model.generate(
+            gen_output = model.generate(
                 pixel_values_siglip=pv_sig,
                 pixel_values_dino=pv_din,
                 input_ids=inp_ids,
@@ -437,6 +506,16 @@ def main():
                 max_new_tokens=args.max_new_tokens,
                 **gen_overrides,
             )
+
+        if export_scores:
+            gen_ids = gen_output.sequences
+            first_step_logits = gen_output.scores[0]
+            batch_scores = _compute_verdict_score(
+                first_step_logits, real_token_ids, fake_token_ids,
+            )
+        else:
+            gen_ids = gen_output
+            batch_scores = None
 
         gen_texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         ref_texts = list(batch.get("answer", []))
@@ -479,6 +558,8 @@ def main():
             }
             if use_classifier and batch_verdicts is not None:
                 row["classifier_verdict"] = batch_verdicts[i]
+            if batch_scores is not None:
+                row["verdict_score"] = round(batch_scores[i], 6)
             per_sample_rows.append(row)
 
     from evaluation.metrics import (
