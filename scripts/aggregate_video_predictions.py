@@ -89,6 +89,161 @@ def compute_metrics(true_labels: list[str], pred_labels: list[str],
     return results
 
 
+def _binary_metrics_at_threshold(
+    y_true: np.ndarray, scores: np.ndarray, threshold: float
+) -> dict:
+    """Compute binary classification metrics at a given score threshold."""
+    y_pred = (scores >= threshold).astype(int)
+    n = len(y_true)
+    tp = int(((y_pred == 1) & (y_true == 1)).sum())
+    fp = int(((y_pred == 1) & (y_true == 0)).sum())
+    tn = int(((y_pred == 0) & (y_true == 0)).sum())
+    fn = int(((y_pred == 0) & (y_true == 1)).sum())
+
+    acc = (tp + tn) / n if n > 0 else 0.0
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+    spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+
+    return {
+        "threshold": round(threshold, 4),
+        "accuracy": round(acc, 4),
+        "precision": round(prec, 4),
+        "recall": round(rec, 4),
+        "f1": round(f1, 4),
+        "specificity": round(spec, 4),
+        "youden_j": round(rec - (1 - spec), 4),
+    }
+
+
+def threshold_sensitivity_analysis(
+    rows: list[dict],
+    video_frames: dict[str, list[dict]],
+) -> dict:
+    """Run threshold sweep on verdict_score for frame-level and video-level.
+
+    Returns a dict with optimal thresholds and full sweep tables.
+    """
+    has_scores = "verdict_score" in rows[0]
+    if not has_scores:
+        return {}
+
+    # --- Frame-level threshold analysis ---
+    frame_y_true = np.array([1 if r["true_label"] == "fake" else 0 for r in rows])
+    frame_scores = np.array([float(r["verdict_score"]) for r in rows])
+
+    thresholds = [i * 0.25 for i in range(-24, 25)]  # -6.0 to +6.0
+    frame_sweep = []
+    best_frame_j = -1.0
+    best_frame_thr = 0.0
+
+    for thr in thresholds:
+        m = _binary_metrics_at_threshold(frame_y_true, frame_scores, thr)
+        frame_sweep.append(m)
+        if m["youden_j"] > best_frame_j:
+            best_frame_j = m["youden_j"]
+            best_frame_thr = thr
+
+    frame_default = _binary_metrics_at_threshold(frame_y_true, frame_scores, 0.0)
+    frame_optimal = _binary_metrics_at_threshold(frame_y_true, frame_scores, best_frame_thr)
+
+    # --- Video-level threshold analysis ---
+    # For each threshold, re-do majority voting with threshold-based frame decisions
+    video_ids = sorted(video_frames.keys())
+    video_y_true = np.array([
+        1 if video_frames[vid][0]["true_label"] == "fake" else 0
+        for vid in video_ids
+    ])
+
+    video_sweep = []
+    best_video_j = -1.0
+    best_video_thr = 0.0
+
+    for thr in thresholds:
+        # For each video, count frames predicted fake at this threshold
+        video_preds = []
+        for vid in video_ids:
+            frames = video_frames[vid]
+            n_fake = sum(1 for f in frames if float(f["verdict_score"]) >= thr)
+            video_preds.append(1 if n_fake > len(frames) / 2 else 0)
+        video_preds_arr = np.array(video_preds)
+
+        n = len(video_y_true)
+        tp = int(((video_preds_arr == 1) & (video_y_true == 1)).sum())
+        fp = int(((video_preds_arr == 1) & (video_y_true == 0)).sum())
+        tn = int(((video_preds_arr == 0) & (video_y_true == 0)).sum())
+        fn = int(((video_preds_arr == 0) & (video_y_true == 1)).sum())
+
+        acc = (tp + tn) / n if n > 0 else 0.0
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        j = rec - (1 - spec)
+
+        entry = {
+            "threshold": round(thr, 4),
+            "accuracy": round(acc, 4),
+            "precision": round(prec, 4),
+            "recall": round(rec, 4),
+            "f1": round(f1, 4),
+            "specificity": round(spec, 4),
+            "youden_j": round(j, 4),
+        }
+        video_sweep.append(entry)
+
+        if j > best_video_j:
+            best_video_j = j
+            best_video_thr = thr
+
+    # Recompute video metrics at default and optimal
+    def _video_metrics_at(thr):
+        preds = []
+        for vid in video_ids:
+            frames = video_frames[vid]
+            n_fake = sum(1 for f in frames if float(f["verdict_score"]) >= thr)
+            preds.append(1 if n_fake > len(frames) / 2 else 0)
+        preds_arr = np.array(preds)
+        n = len(video_y_true)
+        tp = int(((preds_arr == 1) & (video_y_true == 1)).sum())
+        fp = int(((preds_arr == 1) & (video_y_true == 0)).sum())
+        tn = int(((preds_arr == 0) & (video_y_true == 0)).sum())
+        fn = int(((preds_arr == 0) & (video_y_true == 1)).sum())
+        acc = (tp + tn) / n if n > 0 else 0.0
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        return {
+            "threshold": round(thr, 4),
+            "accuracy": round(acc, 4),
+            "precision": round(prec, 4),
+            "recall": round(rec, 4),
+            "f1": round(f1, 4),
+            "specificity": round(spec, 4),
+            "youden_j": round(rec - (1 - spec), 4),
+        }
+
+    video_default = _video_metrics_at(0.0)
+    video_optimal = _video_metrics_at(best_video_thr)
+
+    return {
+        "frame_level": {
+            "default_metrics": frame_default,
+            "optimal_threshold": round(best_frame_thr, 4),
+            "optimal_metrics": frame_optimal,
+            "sweep": frame_sweep,
+        },
+        "video_level": {
+            "default_metrics": video_default,
+            "optimal_threshold": round(best_video_thr, 4),
+            "optimal_metrics": video_optimal,
+            "sweep": video_sweep,
+        },
+    }
+
+
 def main() -> None:
     args = parse_args()
     predictions_path = args.predictions
@@ -221,12 +376,50 @@ def main() -> None:
             writer.writerow(row)
     logger.info("Video predictions CSV saved to: %s", video_csv_path)
 
+    # --- Threshold sensitivity analysis ---
+    threshold_results = threshold_sensitivity_analysis(rows, video_frames)
+    if threshold_results:
+        threshold_path = os.path.join(output_dir, "threshold_analysis.json")
+        with open(threshold_path, "w") as f:
+            json.dump(threshold_results, f, indent=2)
+        logger.info("Threshold analysis saved to: %s", threshold_path)
+
+        fl = threshold_results["frame_level"]
+        vl = threshold_results["video_level"]
+        logger.info("=== Threshold Sensitivity ===")
+        logger.info(
+            "  Frame: default(thr=0) acc=%.4f f1=%.4f | optimal(thr=%.2f) acc=%.4f f1=%.4f",
+            fl["default_metrics"]["accuracy"], fl["default_metrics"]["f1"],
+            fl["optimal_threshold"],
+            fl["optimal_metrics"]["accuracy"], fl["optimal_metrics"]["f1"],
+        )
+        logger.info(
+            "  Video: default(thr=0) acc=%.4f f1=%.4f | optimal(thr=%.2f) acc=%.4f f1=%.4f",
+            vl["default_metrics"]["accuracy"], vl["default_metrics"]["f1"],
+            vl["optimal_threshold"],
+            vl["optimal_metrics"]["accuracy"], vl["optimal_metrics"]["f1"],
+        )
+    else:
+        threshold_results = {}
+        logger.info("No verdict_score found; skipping threshold analysis.")
+
     # Combined summary
     summary = {
         "frame_level": frame_metrics,
         "video_level": video_metrics,
         "per_method": method_metrics,
     }
+    if threshold_results:
+        summary["threshold_optimal"] = {
+            "frame_level": {
+                "threshold": threshold_results["frame_level"]["optimal_threshold"],
+                **threshold_results["frame_level"]["optimal_metrics"],
+            },
+            "video_level": {
+                "threshold": threshold_results["video_level"]["optimal_threshold"],
+                **threshold_results["video_level"]["optimal_metrics"],
+            },
+        }
     summary_path = os.path.join(output_dir, "cross_dataset_summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
