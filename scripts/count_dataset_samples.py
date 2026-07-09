@@ -52,6 +52,8 @@ def count_jsonl(path: str) -> dict:
     by_label = Counter()
     by_method_label = Counter()
 
+    by_question_type = Counter()
+
     for r in rows:
         method = r.get("method", "unknown")
         is_real = r.get("is_real", None)
@@ -68,6 +70,24 @@ def count_jsonl(path: str) -> dict:
         by_label[label] += 1
         by_method_label[(method, label)] += 1
 
+        # Classify question type for DD-VQA
+        question = r.get("question", "")
+        if question:
+            q_lower = question.strip().lower()
+            if "real or fake" in q_lower or "is this image real" in q_lower or "authentic" in q_lower:
+                by_question_type["binary (real/fake)"] += 1
+            elif "describe" in q_lower or "explain" in q_lower:
+                by_question_type["description/explanation"] += 1
+            elif "where" in q_lower or "region" in q_lower or "location" in q_lower or "which part" in q_lower:
+                by_question_type["localization (where)"] += 1
+            elif "what" in q_lower and ("manipulat" in q_lower or "tamper" in q_lower or "forgery" in q_lower):
+                by_question_type["manipulation type (what)"] += 1
+            elif "how" in q_lower:
+                by_question_type["how (method)"] += 1
+            else:
+                # Use first 80 chars as key for unclassified
+                by_question_type[question[:80].strip()] += 1
+
     # Count unique videos
     video_ids = set(r.get("video_id", "") for r in rows if r.get("video_id"))
 
@@ -75,11 +95,12 @@ def count_jsonl(path: str) -> dict:
         "total_samples": total,
         "total_videos": len(video_ids),
         "by_label": dict(by_label),
-        "by_method": dict(by_method.most_common()),
-        "by_method_label": {
-            f"{method} ({label})": count
-            for (method, label), count in sorted(by_method_label.items())
-        },
+        "by_method": by_method.most_common(),
+        "by_method_label": sorted(
+            [(f"{method} ({label})", count)
+             for (method, label), count in by_method_label.items()]
+        ),
+        "by_question_type": by_question_type.most_common(),
     }
 
 
@@ -107,8 +128,12 @@ def main():
         for method, count in result['by_method']:
             print(f"    {method:20s}: {count}")
         print(f"  By method+label:")
-        for key, count in result['by_method_label'].items():
+        for key, count in result['by_method_label']:
             print(f"    {key:35s}: {count}")
+        if result['by_question_type']:
+            print(f"  By question type:")
+            for qtype, count in result['by_question_type']:
+                print(f"    {qtype:40s}: {count}")
 
     # Summary table
     print("\n" + "=" * 80)
@@ -125,11 +150,21 @@ def main():
             f"{result['total_videos']:>8}"
         )
 
-    # Save as JSON
+    # Save as JSON (convert tuples to dicts for serialization)
     output_path = "outputs/dataset_counts.json"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    json_results = {}
+    for name, result in all_results.items():
+        json_results[name] = {
+            "total_samples": result["total_samples"],
+            "total_videos": result["total_videos"],
+            "by_label": result["by_label"],
+            "by_method": {m: c for m, c in result["by_method"]},
+            "by_method_label": {k: c for k, c in result["by_method_label"]},
+            "by_question_type": {q: c for q, c in result["by_question_type"]},
+        }
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
+        json.dump(json_results, f, indent=2, ensure_ascii=False)
     print(f"\nJSON report saved to: {output_path}")
 
 
