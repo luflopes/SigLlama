@@ -21,3 +21,12 @@ for split in val test; do
     --images-dir /datasets/deepfake/ff_classification/frames \
     --output outputs/dino_lora_classifier/scores_$split.jsonl
 done
+
+# DINOv2 LoRA — P(fake) no DD-VQA (apenas test), dedup por imagem.
+# O threshold é calibrado na val do FF++ (acima) e aplicado aqui (transfer).
+python scripts/export_dino_scores.py \
+  --checkpoint outputs/dino_lora_classifier/best.pt \
+  --metadata /datasets/deepfake/ddvqa_prepared/test.jsonl \
+  --images-dir /datasets/deepfake/ddvqa_prepared/frames \
+  --format ddvqa \
+  --output outputs/dino_lora_classifier/scores_ddvqa_test.jsonl

@@ -80,17 +80,28 @@ def _row_label(row: dict) -> int:
     return 0 if method == "Original" else 1
 
 
-def load_samples(metadata_path: str) -> list[dict]:
-    """Load JSONL rows, normalising to {image, label, method, video_id}."""
+def load_samples(metadata_path: str, dedup_by_image: bool = False) -> list[dict]:
+    """Load JSONL rows, normalising to {image, label, method, video_id}.
+
+    When ``dedup_by_image`` is set (DD-VQA, where each frame has multiple
+    QA rows), only the first occurrence of each image is kept so every
+    frame is scored exactly once.
+    """
     samples: list[dict] = []
+    seen: set[str] = set()
     with open(metadata_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             r = json.loads(line)
+            image = r["image"]
+            if dedup_by_image:
+                if image in seen:
+                    continue
+                seen.add(image)
             samples.append({
-                "image": r["image"],
+                "image": image,
                 "label": _row_label(r),
                 "method": r.get("method", "unknown"),
                 "video_id": _derive_video_id(r),
@@ -164,6 +175,9 @@ def main() -> None:
                         help="Directory with the frames referenced in metadata")
     parser.add_argument("--output", required=True,
                         help="Output JSONL path for per-frame scores")
+    parser.add_argument("--format", default="ff", choices=["ff", "ddvqa"],
+                        help="Metadata format. 'ddvqa' deduplicates by image "
+                             "(one score per frame instead of per QA row).")
     parser.add_argument("--image-size", type=int, default=384)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -174,8 +188,11 @@ def main() -> None:
 
     model = load_classifier(args.checkpoint, device)
 
-    samples = load_samples(args.metadata)
-    print(f"Loaded {len(samples)} frames from {args.metadata}")
+    samples = load_samples(args.metadata, dedup_by_image=(args.format == "ddvqa"))
+    print(
+        f"Loaded {len(samples)} frames from {args.metadata} "
+        f"(format={args.format})"
+    )
     dataset = FrameDataset(samples, args.images_dir, args.image_size)
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
