@@ -271,34 +271,77 @@ def compute_loc_metrics(
     predictions: list[str],
     references: list[str],
 ) -> dict[str, float]:
-    """Compute localization metrics: mean IoU and region hit rate.
-
-    Matches predicted bounding boxes to the closest reference box.
+    """Compute localization metrics: mean IoU (on successful predictions), 
+    region hit rate (0.3 and 0.5, in percentage), 
+    instance-level reference coverage rate, 
+    dataset reference presence rate, and dataset prediction presence rate.
     """
     all_ious: list[float] = []
-    hits = 0
-    total_ref_boxes = 0
-
+    hits_03 = 0
+    hits_05 = 0
+    valid_ref_boxes = 0  
+    
+    valid_instances = 0
+    covered_instances = 0
+    
+    total_instances = len(references)
+    instances_with_ref_box = 0
+    instances_with_pred_box = 0
+    
     for pred, ref in zip(predictions, references):
+
         pred_boxes = parse_loc_tokens(pred)
         ref_boxes = parse_loc_tokens(ref)
-        if not ref_boxes:
+        
+        has_ref = len(ref_boxes) > 0
+        has_pred = len(pred_boxes) > 0
+        
+        if has_ref:
+            instances_with_ref_box += 1
+        if has_pred:
+            instances_with_pred_box += 1
+        
+        if not has_ref:
             continue
 
-        total_ref_boxes += len(ref_boxes)
+        valid_instances += 1
+        if has_pred:
+            covered_instances += 1
+
         for rb in ref_boxes:
+            valid_ref_boxes += 1
+            
             if not pred_boxes:
-                all_ious.append(0.0)
                 continue
+            
             best_iou = max(box_iou(pb, rb) for pb in pred_boxes)
-            all_ious.append(best_iou)
+            
+            if best_iou > 0.0:
+                all_ious.append(best_iou)
             if best_iou > 0.3:
-                hits += 1
+                hits_03 += 1
+            if best_iou > 0.5:
+                hits_05 += 1
+
+    # Cálculo das métricas solicitadas
+    hit_rate_03_pct = (hits_03 / valid_ref_boxes * 100) if valid_ref_boxes > 0 else 0.0
+    hit_rate_05_pct = (hits_05 / valid_ref_boxes * 100) if valid_ref_boxes > 0 else 0.0
+    coverage_rate_pct = (covered_instances / valid_instances * 100) if valid_instances > 0 else 0.0
+    
+    # Porcentagem de instâncias no dataset que possuem pelo menos uma bbox de referência
+    ref_presence_pct = (instances_with_ref_box / total_instances * 100) if total_instances > 0 else 0.0
+    
+    # Porcentagem de instâncias no dataset em que o modelo gerou pelo menos uma bbox predita
+    pred_presence_pct = (instances_with_pred_box / total_instances * 100) if total_instances > 0 else 0.0
 
     return {
         "loc_mean_iou": float(np.mean(all_ious)) if all_ious else 0.0,
-        "loc_hit_rate_03": hits / total_ref_boxes if total_ref_boxes > 0 else 0.0,
-        "loc_total_ref_boxes": total_ref_boxes,
+        "loc_hit_rate_03_pct": hit_rate_03_pct,
+        "loc_hit_rate_05_pct": hit_rate_05_pct,
+        "loc_coverage_rate_pct": coverage_rate_pct,
+        "ref_presence_pct": ref_presence_pct,
+        "pred_presence_pct": pred_presence_pct,
+        "loc_total_ref_boxes": valid_ref_boxes,
     }
 
 
