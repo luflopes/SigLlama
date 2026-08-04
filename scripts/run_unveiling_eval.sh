@@ -25,6 +25,14 @@ fi
 COMMON=( --repo "$REPO" --arch "$ARCH" --xception-pretrained "$XCEPTION_PRETRAINED" \
          --image-key image --is-real-key is_real --video-key video_id --dedup-by-image )
 
+# --- FF++ (c23) in-domain TEST: mesmo split usado no treino/val (ff_classification) ---
+python scripts/eval_unveiling.py \
+  --checkpoint "$CKPT" --dataset-name "FF++ (c23) test" \
+  --metadata /datasets/deepfake/ff_classification/test.jsonl \
+  --images-root /datasets/deepfake/ff_classification/frames \
+  "${COMMON[@]}" \
+  --output "$OUT/ffpp_test_scores.jsonl" 2>&1 | tee "$OUT/ffpp_test.log"
+
 # --- DD-VQA (FF++ in-domain via DD-VQA): múltiplas QA por imagem -> dedup ---
 python scripts/eval_unveiling.py \
   --checkpoint "$CKPT" --dataset-name "DD-VQA" \
