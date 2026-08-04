@@ -77,6 +77,9 @@ def parse_args():
                     help="limita o total de amostras de validação (0=sem limite)")
     ap.add_argument("--log-every", type=int, default=20)
     ap.add_argument("--output-dir", default="outputs/unveiling_train")
+    ap.add_argument("--keep-epoch-ckpts", action="store_true",
+                    help="salva um checkpoint por época (ocupa muito disco); "
+                         "por padrão salva APENAS o melhor (best.pkl)")
     return ap.parse_args()
 
 
@@ -221,8 +224,11 @@ def main():
         train_rows = train_rows[:args.max_train]
         logger.info("Treino limitado a %d amostras", len(train_rows))
     if args.max_val > 0 and args.max_val < len(val_rows):
+        # embaralha antes de cortar: o val.jsonl vem ordenado por método
+        # (reais primeiro), então um corte sequencial deixaria só uma classe.
+        random.shuffle(val_rows)
         val_rows = val_rows[:args.max_val]
-        logger.info("Validação limitada a %d amostras", len(val_rows))
+        logger.info("Validação limitada a %d amostras (amostragem aleatória)", len(val_rows))
 
     n_real = sum(1 for r in train_rows if int(r[args.label_key]) == 0)
     n_fake = len(train_rows) - n_real
@@ -262,7 +268,8 @@ def main():
                            eps=1e-08, weight_decay=args.weight_decay)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 
-    best_auc = 0.0
+    best_metric = -1.0   # métrica de seleção (AUC; cai p/ acurácia se AUC indefinido)
+    best_auc = float("nan")
     iteration = 0
     for epoch in range(args.epochs):
         logger.info("Epoch %d/%d", epoch + 1, args.epochs)
@@ -328,15 +335,21 @@ def main():
 
         scheduler.step()
 
-        # salva por época + melhor por AUC
-        epoch_ckpt = os.path.join(output_path, f"epoch_{epoch + 1}.pkl")
-        torch.save(model.state_dict(), epoch_ckpt)
-        if not np.isnan(val_auc) and val_auc > best_auc:
+        # salva o melhor por AUC (fallback p/ acurácia se AUC indefinido).
+        # Por padrão salva APENAS best.pkl; --keep-epoch-ckpts guarda por época.
+        sel = val_acc if np.isnan(val_auc) else val_auc
+        if sel > best_metric:
+            best_metric = sel
             best_auc = val_auc
             torch.save(model.state_dict(), os.path.join(output_path, "best.pkl"))
-            logger.info("  -> novo melhor AUC=%.6f (salvo best.pkl)", best_auc)
+            logger.info("  -> novo melhor (seleção=%.6f, auc=%.6f) salvo best.pkl",
+                        sel, val_auc)
+        if args.keep_epoch_ckpts:
+            torch.save(model.state_dict(),
+                       os.path.join(output_path, f"epoch_{epoch + 1}.pkl"))
 
-    logger.info("Treino concluído. Melhor AUC de validação: %.6f", best_auc)
+    logger.info("Treino concluído. Melhor métrica de seleção: %.6f (AUC=%.6f)",
+                best_metric, best_auc)
     logger.info("Checkpoints em: %s", output_path)
 
 
