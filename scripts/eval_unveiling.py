@@ -1,9 +1,15 @@
 #!/usr/bin/env python
-"""Avaliação cross-dataset do modelo Unveiling_Deepfake (backbone Xception).
+"""Avaliação cross-dataset do modelo Unveiling_Deepfake.
 
-Os pesos disponibilizados pelos autores (ex.: ffpp_c23.pth) são de um Xception
-simples (TransferModel), não da rede tripla completa. Este script:
-  - constrói TransferModel('xception', num_out_classes=2) e carrega o checkpoint;
+Suporta duas arquiteturas via ``--arch``:
+  - ``full`` (default): Xception_Net, a rede tripla completa do artigo
+    (RGB + 2 ramos de frequência via DCT). Use com o checkpoint treinado por
+    ``scripts/train_unveiling.py``; a saída usada é ``outputs['out']``.
+  - ``baseline``: TransferModel('xception'), um Xception simples — útil para os
+    pesos ffpp_c23.pth (que são de um Xception baseline, não da rede tripla).
+
+Este script:
+  - constrói a arquitetura escolhida e carrega o checkpoint;
   - reproduz EXATAMENTE o pré-processamento de teste do repositório
     (cv2 BGR->RGB + albumentations 'val': Resize 299, Normalize 0.5/0.5, ToTensor);
   - roda inferência frame-level e reporta AUC, Acc, F1, Precision, Recall,
@@ -191,6 +197,12 @@ def main():
     ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--repo", default="Unveiling_Deepfake", help="caminho do repo clonado")
+    ap.add_argument("--arch", choices=["baseline", "full"], default="full",
+                    help="'full' = Xception_Net (rede tripla do paper); "
+                         "'baseline' = TransferModel (Xception simples)")
+    ap.add_argument("--xception-pretrained",
+                    default="unvealing_deepfake_models/xception-b5690688.pth",
+                    help="peso ImageNet do Xception para instanciar os backbones (arch full)")
     ap.add_argument("--dataset-name", default="dataset")
     # entrada: jsonl OU list-file
     ap.add_argument("--metadata", help="jsonl com uma imagem por linha")
@@ -224,6 +236,7 @@ def main():
         ap.error("forneça --metadata (jsonl), --list-file ou --frames-dir")
 
     sys.path.insert(0, os.path.abspath(args.repo))
+    import network.xception as xmod
     from network.xception import TransferModel
     from dataset.transform import xception_default_data_transforms
 
@@ -242,9 +255,27 @@ def main():
     if n_real == 0 or n_fake == 0:
         print("[AVISO] apenas uma classe presente; AUC ficará indefinido.")
 
-    model = TransferModel("xception", num_out_classes=2)
-    model.load_state_dict(load_state_dict_flexible(args.checkpoint), strict=True)
+    if args.arch == "full":
+        # inicializa os 3 backbones a partir do peso ImageNet, se disponível
+        if args.xception_pretrained and os.path.exists(args.xception_pretrained):
+            xmod.PRETAINED_WEIGHT_PATH = os.path.abspath(args.xception_pretrained)
+        from network.mymodel_bdct_dfcs_triplet_mi_loss import Xception_Net
+        model = Xception_Net()
+        missing, unexpected = model.load_state_dict(
+            load_state_dict_flexible(args.checkpoint), strict=False)
+        if missing:
+            print(f"[AVISO] chaves ausentes ao carregar checkpoint: {len(missing)}")
+        if unexpected:
+            print(f"[AVISO] chaves inesperadas no checkpoint: {len(unexpected)}")
+    else:
+        model = TransferModel("xception", num_out_classes=2)
+        model.load_state_dict(load_state_dict_flexible(args.checkpoint), strict=True)
     model = model.cuda().eval()
+
+    def forward_logits(x):
+        out = model(x)
+        # Xception_Net retorna dict {'out', 'out_all', 'out_list'}; baseline retorna tensor
+        return out["out"] if isinstance(out, dict) else out
 
     ds = FrameDataset(samples, xception_default_data_transforms["val"])
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
@@ -256,7 +287,7 @@ def main():
     with torch.no_grad():
         for images, labels, idxs in loader:
             images = images.cuda(non_blocking=True)
-            logits = model(images)
+            logits = forward_logits(images)
             probs = F.softmax(logits, dim=1)[:, 1]
             preds = torch.argmax(logits, dim=1)
             idxs = idxs.numpy()
