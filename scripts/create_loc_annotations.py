@@ -179,6 +179,32 @@ def _resolve_indices(region_key: str) -> Optional[list[int]]:
     return indices or None
 
 
+def landmarks_to_bbox_norm(
+    landmarks: list[list[float]],
+    region_key: str,
+) -> Optional[tuple[float, float, float, float]]:
+    """Return ``(x_min, y_min, x_max, y_max)`` in normalized ``[0, 1]``.
+
+    Returns ``None`` if the region has no valid landmarks.
+    """
+    indices = _resolve_indices(region_key)
+    if not indices:
+        return None
+    valid = [i for i in indices if 0 <= i < len(landmarks)]
+    if not valid:
+        return None
+
+    pts = [landmarks[i] for i in valid]
+    x_min = max(0.0, min(1.0, min(p[0] for p in pts)))
+    y_min = max(0.0, min(1.0, min(p[1] for p in pts)))
+    x_max = max(0.0, min(1.0, max(p[0] for p in pts)))
+    y_max = max(0.0, min(1.0, max(p[1] for p in pts)))
+
+    if x_max <= x_min or y_max <= y_min:
+        return None
+    return x_min, y_min, x_max, y_max
+
+
 def landmarks_to_bbox_text(
     landmarks: list[list[float]],
     region_key: str,
@@ -189,27 +215,10 @@ def landmarks_to_bbox_text(
     occlusion truncated the mesh) — caller should skip enrichment for
     that region.
     """
-    indices = _resolve_indices(region_key)
-    if not indices:
+    norm = landmarks_to_bbox_norm(landmarks, region_key)
+    if norm is None:
         return None
-    valid = [i for i in indices if 0 <= i < len(landmarks)]
-    if not valid:
-        return None
-
-    pts = [landmarks[i] for i in valid]
-    x_min = min(p[0] for p in pts)
-    y_min = min(p[1] for p in pts)
-    x_max = max(p[0] for p in pts)
-    y_max = max(p[1] for p in pts)
-
-    x_min = max(0.0, min(1.0, x_min))
-    y_min = max(0.0, min(1.0, y_min))
-    x_max = max(0.0, min(1.0, x_max))
-    y_max = max(0.0, min(1.0, y_max))
-
-    if x_max <= x_min or y_max <= y_min:
-        return None
-
+    x_min, y_min, x_max, y_max = norm
     ly1 = int(round(y_min * BBOX_COORD_SCALE))
     lx1 = int(round(x_min * BBOX_COORD_SCALE))
     ly2 = int(round(y_max * BBOX_COORD_SCALE))

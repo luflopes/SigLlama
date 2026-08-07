@@ -55,6 +55,11 @@ Thumbs.db
 # frames from ddvqa dataset
 ddvqa/
 ddvqa_frames/
+
+# Local Label Studio staging (frames, attention overlays, generated tasks/exports)
+label_studio/data/
+label_studio/tasks_*.json
+label_studio/export*.json
 total.json
 loki_media_aggregate/
 LOKI/
