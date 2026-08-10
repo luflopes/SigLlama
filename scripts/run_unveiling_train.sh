@@ -16,6 +16,8 @@ GRAD_ACCUM="${GRAD_ACCUM:-2}"
 EPOCHS="${EPOCHS:-15}"
 GPU="${GPU:-0}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
+FRAMES_PER_VIDEO="${FRAMES_PER_VIDEO:-0}"   # 0 = todos os frames/vídeo
+BML_METHOD="${BML_METHOD:-mi}"              # mi=soma (código do repo) | auto=peso automático (artigo)
 
 # --- dependência do ramo DCT (torchjpeg) ---
 # Descomente para instalar (precisa casar com a versão do torch instalada):
@@ -31,7 +33,7 @@ if [ "${SANITY:-0}" = "1" ]; then
   echo "== SANITY CHECK: subamostra de frames + 2 épocas =="
   EXTRA=( --frames-per-video 5 --max-val 2000 --epochs 2 )
 else
-  EXTRA=( --epochs "$EPOCHS" )
+  EXTRA=( --epochs "$EPOCHS" --frames-per-video "$FRAMES_PER_VIDEO" )
 fi
 
 python scripts/train_unveiling.py \
@@ -39,6 +41,7 @@ python scripts/train_unveiling.py \
   --data-root "$DATA_ROOT" \
   --xception-pretrained "$XCEPTION_PRETRAINED" \
   --batch-size "$BATCH_SIZE" --grad-accum "$GRAD_ACCUM" \
+  --bml-method "$BML_METHOD" \
   --gpu "$GPU" --num-workers "$NUM_WORKERS" \
   --output-dir "$OUT" \
   "${EXTRA[@]}"

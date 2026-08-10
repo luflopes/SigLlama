@@ -7,7 +7,7 @@ Prefer calling extract_attention_maps.py directly on tarkin::
         --checkpoint outputs/dino_lora_classifier/best.pt \\
         --images-dir /datasets/deepfake/ddvqa_prepared/frames \\
         --all-frames \\
-        --overlay-dir /tmp/ddvqa_attention \\
+        --overlay-dir outputs/analysis/attention_maps \\
         --batch-size 16
 """
 from __future__ import annotations

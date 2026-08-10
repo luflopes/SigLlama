@@ -38,8 +38,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("aggregate_predictions")
 
-# Matches frame suffix like _f00, _f01, _f31
-_FRAME_SUFFIX_RE = re.compile(r"_f\d+\.jpg$")
+# Sufixos de frame por dataset. FF++/Celeb-DF usam ``_fNN.jpg``; o WildDeepfake
+# salva ``video_id/label/subfolder/frame`` como ``1_fake_1_168.png`` (sufixo
+# ``_<frame>.png`` sem o ``f``). A ordem importa: o padrão específico de FF++
+# é tentado antes do genérico para não sobre-remover.
+_FRAME_SUFFIX_RES = [
+    re.compile(r"_f\d+\.(jpg|jpeg|png)$", re.IGNORECASE),
+    re.compile(r"_\d+\.(jpg|jpeg|png)$", re.IGNORECASE),
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,16 +54,44 @@ def parse_args() -> argparse.Namespace:
                    help="Path to predictions.jsonl from evaluate.py")
     p.add_argument("--output-dir", default=None,
                    help="Output directory (defaults to same dir as predictions)")
+    p.add_argument("--metadata", default=None,
+                   help="JSONL opcional (image, video_id) para mapear frame->vídeo "
+                        "de forma exata; recomendado para o WildDeepfake. Sem ele, "
+                        "o video_id é derivado do nome do arquivo.")
     return p.parse_args()
 
 
-def extract_video_id(image_name: str) -> str:
-    """Extract video identifier from frame filename.
+def load_video_id_map(metadata_path: str) -> dict:
+    """Mapeia nome de imagem -> video_id a partir de um JSONL de metadata."""
+    mapping: dict[str, str] = {}
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            img, vid = r.get("image"), r.get("video_id")
+            if img and vid is not None:
+                mapping[img] = str(vid)
+                mapping[os.path.basename(img)] = str(vid)
+    return mapping
 
-    Filenames follow the pattern: {folder}_{videoname}_f{NN}.jpg
-    We strip the _fNN.jpg suffix to get a unique video identifier.
+
+def extract_video_id(image_name: str, meta_map: dict | None = None) -> str:
+    """Recupera o identificador de vídeo a partir do frame.
+
+    Usa o ``video_id`` da metadata quando disponível (mapeamento exato); caso
+    contrário, remove o sufixo de frame do nome do arquivo, cobrindo tanto o
+    padrão ``_fNN.jpg`` (FF++/Celeb-DF) quanto ``_<frame>.png`` (WildDeepfake).
     """
-    return _FRAME_SUFFIX_RE.sub("", image_name)
+    if meta_map:
+        vid = meta_map.get(image_name) or meta_map.get(os.path.basename(image_name))
+        if vid is not None:
+            return vid
+    for rex in _FRAME_SUFFIX_RES:
+        if rex.search(image_name):
+            return rex.sub("", image_name)
+    return image_name
 
 
 def compute_metrics(true_labels: list[str], pred_labels: list[str],
@@ -285,9 +319,12 @@ def main() -> None:
             logger.info("  %s: %s", k, v)
 
     # --- Video-level aggregation ---
+    meta_map = load_video_id_map(args.metadata) if args.metadata else None
+    if meta_map:
+        logger.info("Mapeamento de video_id carregado da metadata: %d entradas", len(meta_map))
     video_frames: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
-        vid_id = extract_video_id(r["image"])
+        vid_id = extract_video_id(r["image"], meta_map)
         video_frames[vid_id].append(r)
 
     logger.info("Grouped into %d videos", len(video_frames))

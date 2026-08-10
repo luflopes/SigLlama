@@ -65,6 +65,10 @@ def parse_args():
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--step-size", type=int, default=5)
     ap.add_argument("--gamma", type=float, default=0.5)
+    ap.add_argument("--bml-method", choices=["mi", "auto", "hyper"], default="mi",
+                    help="balanceamento das perdas: 'mi'=soma (código do repo); "
+                         "'auto'=AutomaticWeightedLoss (o que o ARTIGO descreve); "
+                         "'hyper'=pesos fixos de --scales")
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--gpu", default="0", help="GPU visível (CUDA_VISIBLE_DEVICES)")
@@ -260,11 +264,18 @@ def main():
     device = torch.device("cuda:0")
     model = Xception_Net().to(device)
 
-    # loss e otimização idênticas ao train.py original
+    # loss e otimização (default idêntico ao train.py original: bml_method='mi'=soma)
     loss_function = loss_functions(
-        method="mi", mi_calculator="kl", temperature=1.5, bml_method="mi",
+        method="mi", mi_calculator="kl", temperature=1.5, bml_method=args.bml_method,
         scales=[1, 2, 10], dec_loss=True, gia_loss=True, device="cuda:0")
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999),
+    logger.info("Balanceamento de perdas (bml_method): %s", args.bml_method)
+    # com 'auto' (AutomaticWeightedLoss) os pesos são parâmetros treináveis e
+    # precisam entrar no otimizador.
+    params = list(model.parameters())
+    if args.bml_method == "auto":
+        loss_function.balance_loss = loss_function.balance_loss.to(device)
+        params += list(loss_function.balance_loss.parameters())
+    optimizer = optim.Adam(params, lr=args.lr, betas=(0.9, 0.999),
                            eps=1e-08, weight_decay=args.weight_decay)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 

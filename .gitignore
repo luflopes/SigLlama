@@ -63,3 +63,11 @@ label_studio/export*.json
 total.json
 loki_media_aggregate/
 LOKI/
+notebooks/figures/
+lcs_sample/
+docs/
+*.tex
+*.pkl
+*.pth
+*.pdf
+celebdf.txt
