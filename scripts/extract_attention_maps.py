@@ -19,7 +19,7 @@ Usage (all frames + Label Studio overlays on tarkin)::
         --checkpoint outputs/dino_lora_classifier/best.pt \
         --images-dir /datasets/deepfake/ddvqa_prepared/frames \
         --all-frames \
-        --overlay-dir /tmp/ddvqa_attention \
+        --overlay-dir outputs/analysis/overlays/ \
         --batch-size 16
 
 Output ``.npz`` keys (when ``--output`` is set):
@@ -206,7 +206,7 @@ def main():
     )
     parser.add_argument(
         "--overlay-dir",
-        default=None,
+        default="outputs/analysis/overlays/",
         help="Write jet overlays as JPEG with the same basename as each frame.",
     )
     parser.add_argument("--overlay-alpha", type=float, default=0.5)
