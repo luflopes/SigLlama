@@ -17,6 +17,9 @@ PYTHON="${PYTHON:-python}"
 CONFIG="configs/ablation/g4_gold.yaml"
 OUT="outputs/ablation/g4_gold/stage3"
 CKPT="${CKPT:-$OUT/checkpoint-best.pt}"
+# Respostas gold chegam a ~266 tokens (máx medido). O default do evaluate.py
+# é 128, que cortaria as últimas caixas na geração. Deixe folga (>= 288).
+MAXNEW="${MAXNEW:-320}"
 
 echo "==> Config: $CONFIG"
 
@@ -31,6 +34,7 @@ for SPLIT in test val; do
     --config "$CONFIG" \
     --checkpoint "$CKPT" \
     --split "$SPLIT" \
+    --max-new-tokens "$MAXNEW" \
     --output-dir "outputs/ablation/g4_gold/evaluation/best_${SPLIT}"
 done
 
@@ -48,7 +52,7 @@ Loop de pré-anotação (voltar sugestões do A4 para ajuste no Label Studio):
        cp configs/ablation/g4_gold.yaml configs/ablation/g4_gold_pool.yaml
        # edite test_metadata: .../gold/pool.jsonl  e output_dir do eval
        python evaluation/evaluate.py --config configs/ablation/g4_gold_pool.yaml \\
-         --checkpoint $CKPT --split test \\
+         --checkpoint $CKPT --split test --max-new-tokens $MAXNEW \\
          --output-dir outputs/ablation/g4_gold/evaluation/pool
   2) Traga predictions.jsonl para a máquina do Label Studio e injete:
        python scripts/inject_model_predictions.py \\
