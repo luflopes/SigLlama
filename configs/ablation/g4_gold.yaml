@@ -1,10 +1,10 @@
 # A4-manual (G4-gold) — Localização supervisionada por caixas de ARTEFATO
 # anotadas manualmente (gold), em vez da heurística léxico+landmark do G4-auto.
 #
-# Warm-start a partir do A3 (G3), igual ao g4_lora_loc.yaml, para a comparação
-# ser limpa: A3 -> A4-auto (g4_lora_loc) vs A3 -> A4-manual (este).
-# Só muda a supervisão de localização (metadata) e hiperparâmetros ajustados
-# para um conjunto pequeno (~300 amostras de treino).
+# Warm-start a partir do A4-auto (g4_lora_loc): o modelo JÁ emite caixas, então
+# com ~300 amostras gold ele apenas REFINA a localização para o artefato real
+# (em vez de partir do A3, que não emite caixas e precisaria de muito mais passos
+# para "virar a chave"). Narrativa: "A4 refinado com localização manual".
 seed: 42
 backbone: "tinyllava"
 tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -18,10 +18,11 @@ vision_select_layer: -2
 connector_hidden_dim: 2048
 image_size: 384
 
-# Warm-start do A3 (G3). Para refinar em cima do A4-auto, troque estes dois
-# caminhos por outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt.
-adapter_checkpoint: "outputs/ablation/g3_lora/stage2/checkpoint-final.pt"
-lora_checkpoint: "outputs/ablation/g3_lora/stage2/checkpoint-final.pt"
+# Warm-start do A4-auto (já emite caixas; o gold refina a localização).
+# Para a variante "pura" A3 -> A4-manual, troque por
+# outputs/ablation/g3_lora/stage2/checkpoint-final.pt e suba LR (2e-5) + épocas.
+adapter_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
 dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
 
 # Gold anotado (copie os arquivos de data/ddvqa_gold/ para cá na tarkin).
@@ -58,4 +59,4 @@ log_interval: 10
 save_interval: 100
 val_interval: 25
 sample_interval: 50
-output_dir: "outputs/ablation/g4_gold/stage3"
+output_dir: "outputs/ablation/g4_a4_gold/stage3"
