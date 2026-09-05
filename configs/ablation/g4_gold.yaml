@@ -1,0 +1,61 @@
+# A4-manual (G4-gold) — Localização supervisionada por caixas de ARTEFATO
+# anotadas manualmente (gold), em vez da heurística léxico+landmark do G4-auto.
+#
+# Warm-start a partir do A3 (G3), igual ao g4_lora_loc.yaml, para a comparação
+# ser limpa: A3 -> A4-auto (g4_lora_loc) vs A3 -> A4-manual (este).
+# Só muda a supervisão de localização (metadata) e hiperparâmetros ajustados
+# para um conjunto pequeno (~300 amostras de treino).
+seed: 42
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+dinov2_model: "facebook/dinov2-large"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+# Warm-start do A3 (G3). Para refinar em cima do A4-auto, troque estes dois
+# caminhos por outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt.
+adapter_checkpoint: "outputs/ablation/g3_lora/stage2/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g3_lora/stage2/checkpoint-final.pt"
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
+
+# Gold anotado (copie os arquivos de data/ddvqa_gold/ para cá na tarkin).
+train_metadata: "/datasets/deepfake/ddvqa_prepared/gold/train_loc_gold.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/gold/val_loc_gold.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/gold/test_loc_gold.jsonl"
+image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+max_text_length: 384
+
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules: ["q_proj", "v_proj"]
+lora_dropout: 0.05
+
+# Conjunto pequeno: mais épocas com LR menor + best-checkpoint pela val gold.
+max_epochs: 20
+batch_size: 8
+gradient_accumulation_steps: 4
+num_workers: 2
+balanced_sampling: true
+first_token_loss_weight: 1.0
+augmentation: true
+
+train_connector: true
+connector_lr: 3.0e-6
+adapter_lr: 1.0e-5
+lora_lr: 1.0e-5
+warmup_ratio: 0.05
+max_grad_norm: 1.0
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+log_interval: 10
+save_interval: 100
+val_interval: 25
+sample_interval: 50
+output_dir: "outputs/ablation/g4_gold/stage3"

@@ -1,33 +1,94 @@
 <!--
-  Layout:
-    [imagem com caixas][atenção DINO + referência limpa + veredito + regiões]
+  Layout (centered parent):
+    [meta / tip / question]
+    [ [editar caixas] [attn + limpa] ]  [rótulos]
+    [ [resposta sob as imagens]      ]  [       ]
 -->
 <View>
   <Style>
     .lsf-main-content { font-size: 13px; }
-    .meta-line { color: #777; font-size: 12px; margin: 0 0 4px 0; }
-    .q-line { margin: 0 0 8px 0; font-size: 13px; }
+
+    .page-wrap {
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      width: 100%;
+      max-width: 1280px;
+      margin: 0 auto !important;
+      padding: 4px 8px 12px 8px;
+      box-sizing: border-box;
+    }
+
+    .header-wrap {
+      width: 100%;
+      max-width: 1100px;
+      text-align: center;
+      margin: 0 0 10px 0;
+    }
+    .meta-line {
+      color: #777;
+      font-size: 12px;
+      margin: 0 0 4px 0;
+    }
+    .tip-line {
+      color: #0b5cab;
+      font-size: 12px;
+      margin: 0 0 6px 0;
+      font-weight: 600;
+    }
+    .q-line {
+      margin: 0 0 4px 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
 
     .row-main {
       display: flex !important;
       flex-direction: row !important;
       flex-wrap: nowrap !important;
-      justify-content: flex-start !important;
+      justify-content: center !important;
       align-items: flex-start !important;
-      gap: 12px !important;
+      gap: 14px !important;
       width: 100%;
-      max-width: 1400px;
+      max-width: 1200px;
+    }
+
+    /* Left block = big image + small refs + answer (same width) */
+    .col-images {
+      flex: 0 1 734px !important;
+      width: 734px;
+      max-width: 734px;
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 10px !important;
+    }
+
+    .row-images {
+      display: flex !important;
+      flex-direction: row !important;
+      flex-wrap: nowrap !important;
+      align-items: flex-start !important;
+      gap: 14px !important;
+      width: 100%;
     }
 
     .col-main {
-      flex: 0 1 520px !important;
-      width: 520px;
-      max-width: 520px;
+      flex: 0 1 480px !important;
+      width: 480px;
+      max-width: 480px;
     }
 
-    .col-side {
-      flex: 0 0 360px !important;
-      width: 360px;
+    .col-refs {
+      flex: 0 0 240px !important;
+      width: 240px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .col-labels {
+      flex: 0 0 280px !important;
+      width: 280px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -43,7 +104,7 @@
     .col-main img,
     .col-main canvas,
     .col-main .lsf-object {
-      max-height: 520px !important;
+      max-height: 480px !important;
       max-width: 100% !important;
       width: auto !important;
       height: auto !important;
@@ -57,7 +118,7 @@
     .side-img canvas,
     .side-img .lsf-object {
       max-height: 200px !important;
-      max-width: 340px !important;
+      max-width: 230px !important;
       width: auto !important;
       height: auto !important;
       object-fit: contain !important;
@@ -82,102 +143,102 @@
       justify-content: flex-start;
     }
 
-    .answer-under-image {
-      margin-top: 8px;
+    .answer-under {
       width: 100%;
     }
-    .answer-under-image textarea,
-    .answer-under-image .lsf-textarea textarea {
+    .answer-under textarea,
+    .answer-under .lsf-textarea textarea {
       min-height: 110px !important;
       max-height: 160px !important;
-    }
-
-    .tip-line {
-      color: #0b5cab;
-      font-size: 12px;
-      margin: 0 0 6px 0;
-      font-weight: 600;
+      width: 100% !important;
+      box-sizing: border-box !important;
     }
   </Style>
 
-  <View className="meta-line">
-    <Text name="meta" value="$meta_line"/>
-  </View>
-
-  <View className="tip-line">
-    <Text name="tip_labels"
-          value="Pré-caixas = sugestão. Edite e clique Submit para marcar como revisada. Settings → Show region labels."/>
-  </View>
-
-  <View className="q-line">
-    <Text name="question" value="$question"/>
-  </View>
-
-  <View className="row-main">
-    <View className="col-main">
-      <Text name="hdr_boxes" value="Editar caixas" className="panel-title"/>
-      <Image name="image" value="$image" zoom="true" zoomControl="true"
-             rotateControl="false" brightnessControl="true"/>
-
-      <View className="answer-under-image">
-        <Text name="hdr_answer" value="Resposta de referência" className="panel-title"/>
-        <TextArea name="answer" toName="image" editable="true" required="true"
-                  maxSubmissions="1" rows="5"
-                  placeholder="Edite a explicação completa."/>
+  <View className="page-wrap">
+    <View className="header-wrap">
+      <View className="meta-line">
+        <Text name="meta" value="$meta_line"/>
+      </View>
+      <View className="tip-line">
+        <Text name="tip_labels"
+              value="Pré-caixas = sugestão. Edite e Submit para marcar como revisada. Settings → Show region labels."/>
+      </View>
+      <View className="q-line">
+        <Text name="question" value="$question"/>
       </View>
     </View>
 
-    <View className="col-side">
-      <View className="side-img">
-        <Text name="hdr_attn" value="Atenção DINOv2 (overlay)" className="panel-title"/>
-        <Image name="image_attn" value="$image_attn" zoom="true" zoomControl="false"
-               rotateControl="false"/>
+    <View className="row-main">
+      <View className="col-images">
+        <View className="row-images">
+          <View className="col-main">
+            <Text name="hdr_boxes" value="Editar caixas" className="panel-title"/>
+            <Image name="image" value="$image" zoom="true" zoomControl="true"
+                   rotateControl="false" brightnessControl="true"/>
+          </View>
+
+          <View className="col-refs">
+            <View className="side-img">
+              <Text name="hdr_attn" value="Atenção DINOv2" className="panel-title"/>
+              <Image name="image_attn" value="$image_attn" zoom="true" zoomControl="false"
+                     rotateControl="false"/>
+            </View>
+            <View className="side-img">
+              <Text name="hdr_clean" value="Referência limpa" className="panel-title"/>
+              <Image name="image_clean" value="$image" zoom="true" zoomControl="false"
+                     rotateControl="false"/>
+            </View>
+          </View>
+        </View>
+
+        <View className="answer-under">
+          <Text name="hdr_answer" value="Resposta de referência" className="panel-title"/>
+          <TextArea name="answer" toName="image" editable="true" required="true"
+                    maxSubmissions="1" rows="5"
+                    placeholder="Edite a explicação completa."/>
+        </View>
       </View>
 
-      <View className="side-img">
-        <Text name="hdr_clean" value="Referência limpa" className="panel-title"/>
-        <Image name="image_clean" value="$image" zoom="true" zoomControl="false"
-               rotateControl="false"/>
-      </View>
+      <View className="col-labels">
+        <View className="verdict-wrap">
+          <Text name="hdr_verdict" value="Veredito" className="panel-title"/>
+          <Choices name="verdict" toName="image" required="true" choice="single" showInLine="true">
+            <Choice value="Fake"/>
+            <Choice value="Real"/>
+          </Choices>
+        </View>
 
-      <View className="verdict-wrap">
-        <Text name="hdr_verdict" value="Veredito" className="panel-title"/>
-        <Choices name="verdict" toName="image" required="true" choice="single" showInLine="true">
-          <Choice value="Fake"/>
-          <Choice value="Real"/>
-        </Choices>
-      </View>
+        <View className="regions-wrap">
+          <Text name="hdr_regions" value="Regiões (caixas)" className="panel-title"/>
+          <RectangleLabels name="regions" toName="image" canRotate="false"
+                           strokeWidth="3" opacity="0.22">
+            <Label value="eyes" background="#e6194B"/>
+            <Label value="left_eye" background="#f58231"/>
+            <Label value="right_eye" background="#ffe119"/>
+            <Label value="eyebrows" background="#911eb4"/>
+            <Label value="left_eyebrow" background="#f032e6"/>
+            <Label value="right_eyebrow" background="#dcbeff"/>
+            <Label value="nose" background="#4363d8"/>
+            <Label value="mouth" background="#42d4f4"/>
+            <Label value="jawline" background="#469990"/>
+            <Label value="cheeks" background="#9A6324"/>
+            <Label value="left_cheek" background="#800000"/>
+            <Label value="right_cheek" background="#aaffc3"/>
+            <Label value="forehead" background="#808000"/>
+            <Label value="hair" background="#000075"/>
+            <Label value="face" background="#3cb44b"/>
+            <Label value="skin" background="#ffd8b1"/>
+            <Label value="custom" background="#a9a9a9"/>
+          </RectangleLabels>
+        </View>
 
-      <View className="regions-wrap">
-        <Text name="hdr_regions" value="Regiões" className="panel-title"/>
-        <!-- Cores bem distintas; nomes nas caixas: Settings → Show region labels -->
-        <RectangleLabels name="regions" toName="image" canRotate="false"
-                         strokeWidth="3" opacity="0.22">
-          <Label value="eyes" background="#e6194B"/>
-          <Label value="left_eye" background="#f58231"/>
-          <Label value="right_eye" background="#ffe119"/>
-          <Label value="eyebrows" background="#911eb4"/>
-          <Label value="left_eyebrow" background="#f032e6"/>
-          <Label value="right_eyebrow" background="#dcbeff"/>
-          <Label value="nose" background="#4363d8"/>
-          <Label value="mouth" background="#42d4f4"/>
-          <Label value="jawline" background="#469990"/>
-          <Label value="cheeks" background="#9A6324"/>
-          <Label value="left_cheek" background="#800000"/>
-          <Label value="right_cheek" background="#aaffc3"/>
-          <Label value="forehead" background="#808000"/>
-          <Label value="hair" background="#000075"/>
-          <Label value="face" background="#3cb44b"/>
-          <Label value="skin" background="#ffd8b1"/>
-          <Label value="custom" background="#a9a9a9"/>
-        </RectangleLabels>
-      </View>
-
-      <View visibleWhen="region-selected">
-        <Text name="hdr_span" value="Trecho da caixa" className="panel-title"/>
-        <TextArea name="span" toName="image" editable="true" perRegion="true"
-                  maxSubmissions="1" rows="2"
-                  placeholder="Trecho ligado à caixa"/>
+        <View visibleWhen="region-selected">
+          <Text name="hdr_span" value="Trecho da caixa" className="panel-title"/>
+          <TextArea name="span" toName="image" editable="true" perRegion="true"
+                    maxSubmissions="1" rows="2"
+                    placeholder="Trecho ligado à caixa"/>
+        </View>
       </View>
     </View>
   </View>

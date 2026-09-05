@@ -60,6 +60,10 @@ ddvqa_frames/
 label_studio/data/
 label_studio/tasks_*.json
 label_studio/export*.json
+label_studio/_annotated_state.json
+
+# Gold dataset gerado a partir das anotações (regenerável do LS)
+data/ddvqa_gold/
 total.json
 loki_media_aggregate/
 LOKI/
