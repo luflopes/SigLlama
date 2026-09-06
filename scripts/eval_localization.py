@@ -67,21 +67,46 @@ def best_iou(box, others) -> float:
     return max((iou(box, o) for o in others), default=0.0)
 
 
-def evaluate(path: str, thresholds=(0.3, 0.5)):
+def center(b):
+    y1, x1, y2, x2 = b
+    return ((y1 + y2) / 2.0, (x1 + x2) / 2.0)
+
+
+def center_in(box, others) -> bool:
+    """True if box's center lies inside any of the other boxes."""
+    cy, cx = center(box)
+    for oy1, ox1, oy2, ox2 in others:
+        if oy1 <= cy <= oy2 and ox1 <= cx <= ox2:
+            return True
+    return False
+
+
+def evaluate(path: str, thresholds=(0.3, 0.5), exclude=()):
     rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
     agg = defaultdict(lambda: {
         "n": 0, "samples_with_gen": 0,
         "n_gen": 0, "n_ref": 0,
         "iou_sum": 0.0,
-        "hit": {t: 0 for t in thresholds},   # ref boxes covered
-        "prec": {t: 0 for t in thresholds},  # gen boxes matched
+        "hit": {t: 0 for t in thresholds},   # ref boxes covered (IoU)
+        "prec": {t: 0 for t in thresholds},  # gen boxes matched (IoU)
+        "chit": 0,   # ref boxes with a gen center inside (center-recall)
+        "cprec": 0,  # gen boxes whose center is inside a ref (center-prec)
     })
 
+    real = {"n": 0, "with_box": 0, "n_box": 0}
     for r in rows:
         method = r.get("method", "?")
         gen = parse_boxes(r.get("generated", ""))
         ref = parse_boxes(r.get("reference_answer", "") or r.get("reference", ""))
-        for key in (method, "OVERALL"):
+        is_real = (str(r.get("true_label", "")).lower() == "real") or bool(r.get("is_real"))
+        if is_real:
+            real["n"] += 1
+            real["with_box"] += 1 if gen else 0
+            real["n_box"] += len(gen)
+        keys = [method]
+        if method not in exclude:
+            keys.append("OVERALL(fake)" if exclude else "OVERALL")
+        for key in keys:
             a = agg[key]
             a["n"] += 1
             a["samples_with_gen"] += 1 if gen else 0
@@ -93,21 +118,27 @@ def evaluate(path: str, thresholds=(0.3, 0.5)):
                 for t in thresholds:
                     if bi >= t:
                         a["hit"][t] += 1
+                if center_in(rb, gen) or any(center_in(g, [rb]) for g in gen):
+                    a["chit"] += 1
             for gb in gen:
                 bi = best_iou(gb, ref)
                 for t in thresholds:
                     if bi >= t:
                         a["prec"][t] += 1
-    return agg, thresholds
+                if center_in(gb, ref):
+                    a["cprec"] += 1
+    return agg, real
 
 
 def print_table(agg, thresholds, label):
     print(f"\n================  {label}  ================")
     hdr = (f"{'method':16s} {'n':>4} {'gen_cov':>7} {'gbox/i':>6} {'rbox/i':>6} "
-           f"{'mIoU':>6} " + " ".join(f"hit@{t}".rjust(7) for t in thresholds) + " "
+           f"{'mIoU':>6} " + " ".join(f"hit@{t}".rjust(7) for t in thresholds)
+           + f" {'cHit':>6} {'cPrc':>6} "
            + " ".join(f"prc@{t}".rjust(7) for t in thresholds))
     print(hdr)
-    order = [k for k in sorted(agg) if k != "OVERALL"] + ["OVERALL"]
+    specials = ("OVERALL", "OVERALL(fake)")
+    order = [k for k in sorted(agg) if k not in specials] + [k for k in specials if k in agg]
     for k in order:
         a = agg[k]
         n = a["n"] or 1
@@ -116,7 +147,8 @@ def print_table(agg, thresholds, label):
         miou = a["iou_sum"] / nref
         row = (f"{k:16s} {a['n']:>4} {a['samples_with_gen']/n:>7.2f} "
                f"{a['n_gen']/n:>6.2f} {a['n_ref']/n:>6.2f} {miou:>6.3f} "
-               + " ".join(f"{a['hit'][t]/nref:>7.3f}" for t in thresholds) + " "
+               + " ".join(f"{a['hit'][t]/nref:>7.3f}" for t in thresholds)
+               + f" {a['chit']/nref:>6.3f} {a['cprec']/ngen:>6.3f} "
                + " ".join(f"{a['prec'][t]/ngen:>7.3f}" for t in thresholds))
         print(row)
 
@@ -127,20 +159,39 @@ def main() -> None:
     p.add_argument("--compare", default=None, help="Second predictions.jsonl (same test set)")
     p.add_argument("--labels", nargs=2, default=["model", "compare"])
     p.add_argument("--thresholds", type=float, nargs="+", default=[0.3, 0.5])
+    p.add_argument("--exclude-methods", nargs="*", default=[],
+                   help="Métodos fora do agregado (ex.: Original). "
+                        "Cria linha OVERALL(fake).")
     args = p.parse_args()
 
     thr = tuple(args.thresholds)
-    agg, _ = evaluate(args.pred, thr)
+    excl = tuple(args.exclude_methods)
+    okey = "OVERALL(fake)" if excl else "OVERALL"
+
+    def hallu(real, label):
+        n = real["n"] or 1
+        print(f"  [{label}] alucinação em reais: "
+              f"{100*real['with_box']/n:.0f}% das {real['n']} imgs reais com >=1 caixa "
+              f"(caixas/real={real['n_box']/n:.2f})")
+
+    agg, real1 = evaluate(args.pred, thr, excl)
     print_table(agg, thr, args.labels[0])
     if args.compare:
-        agg2, _ = evaluate(args.compare, thr)
+        agg2, real2 = evaluate(args.compare, thr, excl)
         print_table(agg2, thr, args.labels[1])
-        o1, o2 = agg["OVERALL"], agg2["OVERALL"]
-        print(f"\nΔ (OVERALL {args.labels[0]} - {args.labels[1]}):")
+        o1, o2 = agg[okey], agg2[okey]
+        print(f"\nΔ ({okey}  {args.labels[0]} - {args.labels[1]}):")
         print(f"  mIoU:   {o1['iou_sum']/max(1,o1['n_ref']) - o2['iou_sum']/max(1,o2['n_ref']):+.3f}")
         for t in thr:
             d = o1['hit'][t]/max(1,o1['n_ref']) - o2['hit'][t]/max(1,o2['n_ref'])
             print(f"  hit@{t}: {d:+.3f}")
+        dc = o1['chit']/max(1,o1['n_ref']) - o2['chit']/max(1,o2['n_ref'])
+        print(f"  cHit:   {dc:+.3f}")
+
+    print("\nAlucinação em imagens reais (menor = melhor):")
+    hallu(real1, args.labels[0])
+    if args.compare:
+        hallu(real2, args.labels[1])
 
     print("\nLegenda: gen_cov=frac imgs com >=1 caixa | gbox/i,rbox/i=caixas por img "
           "(gerada/ref) | mIoU=IoU médio por caixa ref | hit@t=recall de artefatos "

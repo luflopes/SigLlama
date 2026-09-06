@@ -1,0 +1,60 @@
+# A4-manual (G4-gold) — INFERÊNCIA no pool (restante do treino) para gerar
+# pré-anotações que serão ajustadas no Label Studio.
+#
+# Idêntico a g4_gold.yaml, exceto que test_metadata aponta para o pool.jsonl.
+# Uso na tarkin (o --split test lê test_metadata):
+#   python evaluation/evaluate.py --config configs/ablation/g4_gold_pool.yaml \
+#     --checkpoint outputs/ablation/g4_a4_gold/stage3/checkpoint-best.pt \
+#     --split test --max-new-tokens 320 \
+#     --output-dir outputs/ablation/g4_a4_gold/evaluation/pool
+seed: 42
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+dinov2_model: "facebook/dinov2-large"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+adapter_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g4_lora_loc/stage3/checkpoint-final.pt"
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
+
+# Pool = restante do treino a ser pré-anotado (usado como "test" só p/ inferência).
+train_metadata: "/datasets/deepfake/ddvqa_prepared/gold/train_loc_gold.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/gold/val_loc_gold.jsonl"
+test_metadata: "/datasets/deepfake/ddvqa_prepared/gold/pool.jsonl"
+image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+max_text_length: 384
+
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules: ["q_proj", "v_proj"]
+lora_dropout: 0.05
+
+max_epochs: 20
+batch_size: 8
+gradient_accumulation_steps: 4
+num_workers: 2
+balanced_sampling: true
+first_token_loss_weight: 1.0
+augmentation: true
+
+train_connector: true
+connector_lr: 3.0e-6
+adapter_lr: 1.0e-5
+lora_lr: 1.0e-5
+warmup_ratio: 0.05
+max_grad_norm: 1.0
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+log_interval: 10
+save_interval: 100
+val_interval: 25
+sample_interval: 50
+output_dir: "outputs/ablation/g4_a4_gold/stage3"
