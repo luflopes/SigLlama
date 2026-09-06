@@ -48,6 +48,15 @@ def parse_args():
     p.add_argument("--checkpoint", required=True, help="Checkpoint .pt with adapter + lora")
     p.add_argument("--split", default="val", choices=["val", "test"])
     p.add_argument(
+        "--test-metadata", default=None,
+        help="Override cfg['test_metadata'] (avalia o mesmo checkpoint em outro "
+             "conjunto, ex.: gold test fino vs clean test n-grande).",
+    )
+    p.add_argument(
+        "--val-metadata", default=None,
+        help="Override cfg['val_metadata'].",
+    )
+    p.add_argument(
         "--max-new-tokens", type=int, default=128,
         help=(
             "Hard cap on generated tokens. DD-VQA reference answers have "
@@ -346,6 +355,11 @@ def main():
     args = parse_args()
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    if args.test_metadata:
+        cfg["test_metadata"] = args.test_metadata
+    if args.val_metadata:
+        cfg["val_metadata"] = args.val_metadata
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(cfg, args.checkpoint, device)

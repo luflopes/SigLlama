@@ -1,0 +1,56 @@
+# PASSO 3 — A4-final: parte do A3 do PASSO 2 (g3_clean_gold) e treina localização
+# no DD-VQA ajustado (loc limpo, SEM caixas em reais) + gold (texto + caixas)
+# substituindo as instâncias de train/val + leve oversampling do gold.
+# Teste FINO no gold test (caixas limpas); teste n-grande no clean test.
+seed: 42
+backbone: "tinyllava"
+tinyllama_model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+siglip_model: "google/siglip-so400m-patch14-384"
+dinov2_model: "facebook/dinov2-large"
+tinyllava_weights: "outputs/tinyllava_weights.pt"
+load_tinyllava_weights: true
+use_dino: true
+mof_strategy: "interleave"
+vision_select_layer: -2
+connector_hidden_dim: 2048
+image_size: 384
+
+# Warm-start do A3 treinado no PASSO 2 (texto limpo + gold).
+adapter_checkpoint: "outputs/ablation/g3_clean_gold/stage2/checkpoint-final.pt"
+lora_checkpoint: "outputs/ablation/g3_clean_gold/stage2/checkpoint-final.pt"
+dino_lora_checkpoint: "outputs/dino_lora_classifier/best.pt"
+
+train_metadata: "/datasets/deepfake/ddvqa_prepared/clean/train_loc_final.jsonl"
+val_metadata: "/datasets/deepfake/ddvqa_prepared/clean/val_loc_final.jsonl"
+# Teste FINO de localização = gold test (caixas humanas limpas).
+test_metadata: "/datasets/deepfake/ddvqa_prepared/gold/test_loc_gold.jsonl"
+image_root: "/datasets/deepfake/ddvqa_prepared/frames"
+max_text_length: 384
+
+lora_rank: 32
+lora_alpha: 64
+lora_target_modules: ["q_proj", "v_proj"]
+lora_dropout: 0.05
+
+max_epochs: 5
+batch_size: 16
+gradient_accumulation_steps: 4
+num_workers: 2
+balanced_sampling: true
+first_token_loss_weight: 1.0
+augmentation: true
+
+train_connector: true
+connector_lr: 5.0e-6
+adapter_lr: 2.0e-5
+lora_lr: 2.0e-5
+warmup_ratio: 0.03
+max_grad_norm: 1.0
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+log_interval: 20
+save_interval: 200
+val_interval: 100
+sample_interval: 100
+output_dir: "outputs/ablation/g4_final/stage3"

@@ -353,10 +353,27 @@ def parse_args():
     )
     p.add_argument("--output", required=True, help="Output enriched JSONL")
     p.add_argument(
-        "--ground-question", action="store_true", default=True,
+        "--ground-question", dest="ground_question", action="store_true",
         help=(
-            "If set (default), regions named in the question but missing "
-            "from the answer get a prepended grounded clause."
+            "Regions named in the question but missing from the answer get a "
+            "prepended grounded clause (legacy default)."
+        ),
+    )
+    p.add_argument(
+        "--no-ground-question", dest="ground_question", action="store_false",
+        help=(
+            "Disable question-driven region injection. RECOMMENDED for the "
+            "clean pipeline: keeps only boxes for regions actually mentioned "
+            "in the answer (no 'The X region [box] is the focus.' clauses)."
+        ),
+    )
+    p.set_defaults(ground_question=True)
+    p.add_argument(
+        "--skip-real-boxes", action="store_true",
+        help=(
+            "Do not inject any box when the sample is REAL (is_real true or "
+            "answer/verdict starts with 'real'). RECOMMENDED: manipulation "
+            "artifacts only exist on fakes; boxing real faces is label noise."
         ),
     )
     return p.parse_args()
@@ -378,6 +395,7 @@ def main():
     enriched = 0
     no_landmarks = 0
     no_regions = 0
+    skipped_real = 0
     region_counter: Counter = Counter()
 
     with open(args.ddvqa_jsonl, "r", encoding="utf-8") as fin, \
@@ -387,14 +405,23 @@ def main():
             total += 1
 
             img_rel = row.get("image", "")
+            question = row.get("question", "") or ""
+            answer = row.get("answer", "") or ""
+
+            # Skip localization on REAL samples (artifacts only exist on fakes).
+            is_real = bool(row.get("is_real")) or bool(
+                re.match(r"^\s*real\b", answer, flags=re.IGNORECASE)
+            )
+            if args.skip_real_boxes and is_real:
+                fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                skipped_real += 1
+                continue
+
             landmarks = landmarks_db.get(img_rel)
             if landmarks is None:
                 fout.write(json.dumps(row, ensure_ascii=False) + "\n")
                 no_landmarks += 1
                 continue
-
-            question = row.get("question", "") or ""
-            answer = row.get("answer", "") or ""
 
             grounded_q: set[str] = set()
             if args.ground_question and question:
@@ -416,9 +443,11 @@ def main():
             enriched += 1
 
     logger.info(
-        "Done. total=%d, enriched=%d, no_landmarks=%d (kept original), "
-        "no_regions=%d (kept original). Output: %s",
-        total, enriched, no_landmarks, no_regions, args.output,
+        "Done. total=%d, enriched=%d, skipped_real=%d (no boxes), "
+        "no_landmarks=%d (kept original), no_regions=%d (kept original). "
+        "ground_question=%s. Output: %s",
+        total, enriched, skipped_real, no_landmarks, no_regions,
+        args.ground_question, args.output,
     )
     if region_counter:
         top = region_counter.most_common()

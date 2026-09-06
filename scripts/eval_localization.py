@@ -153,6 +153,53 @@ def print_table(agg, thresholds, label):
         print(row)
 
 
+def per_image_records(path, exclude):
+    """Per-image (n_ref, iou_sum, hit50, chit) for fake images -> bootstrap."""
+    recs = []
+    for l in open(path, encoding="utf-8"):
+        if not l.strip():
+            continue
+        r = json.loads(l)
+        if r.get("method", "?") in exclude:
+            continue
+        if str(r.get("true_label", "")).lower() == "real" or r.get("is_real"):
+            continue
+        gen = parse_boxes(r.get("generated", ""))
+        ref = parse_boxes(r.get("reference_answer", "") or r.get("reference", ""))
+        if not ref:
+            continue
+        iou_sum = sum(best_iou(rb, gen) for rb in ref)
+        hit50 = sum(1 for rb in ref if best_iou(rb, gen) >= 0.5)
+        chit = sum(1 for rb in ref
+                   if center_in(rb, gen) or any(center_in(g, [rb]) for g in gen))
+        recs.append((len(ref), iou_sum, hit50, chit))
+    return recs
+
+
+def bootstrap_ci(recs, B=2000, seed=42):
+    import random
+    rng = random.Random(seed)
+    n = len(recs)
+
+    def agg(sample):
+        nref = sum(x[0] for x in sample) or 1
+        return (sum(x[1] for x in sample) / nref,   # mIoU
+                sum(x[2] for x in sample) / nref,   # hit@0.5
+                sum(x[3] for x in sample) / nref)   # cHit
+    point = agg(recs)
+    dists = [[], [], []]
+    for _ in range(B):
+        sample = [recs[rng.randrange(n)] for _ in range(n)]
+        for i, v in enumerate(agg(sample)):
+            dists[i].append(v)
+    out = {}
+    for name, pt, d in zip(("mIoU", "hit@0.5", "cHit"), point, dists):
+        d.sort()
+        lo, hi = d[int(0.025 * B)], d[int(0.975 * B)]
+        out[name] = (pt, lo, hi)
+    return n, out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--pred", required=True)
@@ -162,6 +209,8 @@ def main() -> None:
     p.add_argument("--exclude-methods", nargs="*", default=[],
                    help="Métodos fora do agregado (ex.: Original). "
                         "Cria linha OVERALL(fake).")
+    p.add_argument("--bootstrap", type=int, default=0,
+                   help="N reamostragens p/ IC 95%% (fakes). 0 = desliga.")
     args = p.parse_args()
 
     thr = tuple(args.thresholds)
@@ -192,6 +241,15 @@ def main() -> None:
     hallu(real1, args.labels[0])
     if args.compare:
         hallu(real2, args.labels[1])
+
+    if args.bootstrap:
+        print(f"\nIC 95% por bootstrap (fakes, B={args.bootstrap}) — ponto [lo, hi]:")
+        for lbl, path in ([(args.labels[0], args.pred)]
+                          + ([(args.labels[1], args.compare)] if args.compare else [])):
+            n, ci = bootstrap_ci(per_image_records(path, excl), B=args.bootstrap)
+            print(f"  [{lbl}] (n_imgs={n})")
+            for name, (pt, lo, hi) in ci.items():
+                print(f"    {name:8s} {pt:.3f}  [{lo:.3f}, {hi:.3f}]")
 
     print("\nLegenda: gen_cov=frac imgs com >=1 caixa | gbox/i,rbox/i=caixas por img "
           "(gerada/ref) | mIoU=IoU médio por caixa ref | hit@t=recall de artefatos "
