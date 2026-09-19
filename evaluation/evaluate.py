@@ -107,6 +107,15 @@ def parse_args():
             "in predictions.jsonl for ROC-AUC computation."
         ),
     )
+    p.add_argument(
+        "--strip-loc-tokens", action="store_true",
+        help=(
+            "Remove tokens de localização (caixas [y1,x1,y2,x2] e <locNNNN>) de "
+            "predições e referências antes de computar as métricas textuais "
+            "(BLEU/ROUGE/CIDEr), isolando a capacidade de geração de texto dos "
+            "modelos de localização. Não altera predictions.jsonl."
+        ),
+    )
     return p.parse_args()
 
 
@@ -581,15 +590,26 @@ def main():
         compute_rouge,
         compute_cider,
         compute_detection_f1,
+        strip_loc_tokens,
     )
 
-    bleu = compute_bleu(predictions, references)
-    rouge = compute_rouge(predictions, references)
+    # Opcionalmente remove tokens de localização (caixas) antes das métricas
+    # textuais, para medir a qualidade do texto sem contaminação das coordenadas.
+    if getattr(args, "strip_loc_tokens", False):
+        text_predictions = [strip_loc_tokens(p) for p in predictions]
+        text_references = [strip_loc_tokens(r) for r in references]
+        logger.info("Métricas textuais computadas com --strip-loc-tokens (caixas removidas).")
+    else:
+        text_predictions = predictions
+        text_references = references
+
+    bleu = compute_bleu(text_predictions, text_references)
+    rouge = compute_rouge(text_predictions, text_references)
     detection = compute_detection_f1(pred_labels, true_labels)
     detection_legacy = compute_detection_f1(pred_labels_legacy, true_labels)
 
     try:
-        cider_score = compute_cider(predictions, references)
+        cider_score = compute_cider(text_predictions, text_references)
     except Exception as e:
         logger.warning("CIDEr computation failed: %s", e)
         cider_score = 0.0
@@ -602,6 +622,7 @@ def main():
         "detection_legacy": detection_legacy,
         "constrained_first_token": bool(first_token_processor is not None),
         "classifier_used": use_classifier,
+        "loc_tokens_stripped": bool(getattr(args, "strip_loc_tokens", False)),
     }
     if use_classifier:
         results["classifier_checkpoint"] = args.classifier_checkpoint

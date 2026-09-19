@@ -114,12 +114,29 @@ def main() -> None:
     ap.add_argument("--compare", default=None)
     ap.add_argument("--labels", nargs=2, default=["A", "B"])
     ap.add_argument("--topk", type=int, default=5)
+    ap.add_argument("--question", default=None,
+                    help="Só linhas com esta pergunta exata.")
+    ap.add_argument("--only-global", action="store_true",
+                    help="Atalho: só a pergunta global 'Does the image looks real/fake?' "
+                         "(onde o gold atua; texto livre = onde 'formulaico' importa).")
     args = ap.parse_args()
 
-    s1 = analyze(load(Path(args.pred)), args.topk)
+    qfilter = args.question
+    if args.only_global:
+        qfilter = "Does the image looks real/fake?"
+
+    def rows_of(path):
+        rows = load(Path(path))
+        if qfilter is not None:
+            rows = [r for r in rows if r.get("question") == qfilter]
+        return rows
+
+    if qfilter is not None:
+        print(f"[filtro de pergunta] «{qfilter}»")
+    s1 = analyze(rows_of(args.pred), args.topk)
     show(s1, args.labels[0])
     if args.compare:
-        s2 = analyze(load(Path(args.compare)), args.topk)
+        s2 = analyze(rows_of(args.compare), args.topk)
         show(s2, args.labels[1])
         print(f"\nΔ ({args.labels[0]} - {args.labels[1]}):")
         print(f"  unique_ratio : {(s1['unique_ratio']-s2['unique_ratio'])*100:+.1f} pp")

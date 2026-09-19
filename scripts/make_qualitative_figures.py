@@ -29,13 +29,14 @@ matplotlib.use("Agg")
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, Rectangle
+from PIL import Image, ImageDraw
 from wordcloud import WordCloud
 
 # --------------------------------------------------------------------------- #
 # Configuração
 # --------------------------------------------------------------------------- #
-PRED_PATH = "outputs/ablation/g4_lora_loc/evaluation/best_test/predictions.jsonl"
-FRAMES_DIR = "ddvqa/frames"
+PRED_PATH = "outputs/ablation/g4_auto_clean/evaluation/cleantest/predictions.jsonl"
+FRAMES_DIR = "label_studio/data/frames"
 OUT_DIRS = ["notebooks/figures", "outputs/figures"]
 
 FAKE_COLOR = "#c0392b"
@@ -45,7 +46,7 @@ BOX_COLOR = "#f1c40f"
 # Casos de falha exibidos no painel: (imagem, método, rótulo, predito).
 FAILURE_CASES = [
     ("Face2Face_233_995.jpg", "Face2Face", "Fake", "Real"),
-    ("NeuralTextures_707_705.jpg", "NeuralTextures", "Fake", "Real"),
+    ("NeuralTextures_227_169.jpg", "NeuralTextures", "Fake", "Real"),
     ("FaceSwap_190_176.jpg", "FaceSwap", "Fake", "Real"),
     ("Original_507.jpg", "Original", "Real", "Fake"),
 ]
@@ -212,12 +213,67 @@ def make_failure_panel(rows: list[dict]):
 
 
 # --------------------------------------------------------------------------- #
+# 3b) Exportação de assets individuais dos casos de falha (para montagem manual,
+#     ex.: Draw.io). Salva, por caso, a face limpa, a versão com caixas e o texto.
+# --------------------------------------------------------------------------- #
+FAILURE_ASSETS_DIR = "outputs/figures/failure_cases_assets"
+FAILURE_ASSET_SIZE = 512  # lado do quadrado (upscale para composição nítida)
+
+
+def export_failure_assets(rows: list[dict]):
+    generated = {r["image"]: r["generated"] for r in rows}
+    by_image = {r["image"]: r for r in rows}
+    os.makedirs(FAILURE_ASSETS_DIR, exist_ok=True)
+
+    for img, method, true_lab, pred_lab in FAILURE_CASES:
+        stem = os.path.splitext(img)[0]
+        case_dir = os.path.join(FAILURE_ASSETS_DIR, stem)
+        os.makedirs(case_dir, exist_ok=True)
+
+        base = Image.open(os.path.join(FRAMES_DIR, img)).convert("RGB")
+        base = base.resize((FAILURE_ASSET_SIZE, FAILURE_ASSET_SIZE), Image.LANCZOS)
+
+        # Imagem limpa (sem caixas).
+        base.save(os.path.join(case_dir, "clean.png"))
+
+        # Versão com as caixas geradas (mesmo amarelo da figura). As caixas do
+        # DD-VQA seguem [y1, x1, y2, x2] em escala normalizada [0, 1000].
+        boxed = base.copy()
+        draw = ImageDraw.Draw(boxed)
+        s = FAILURE_ASSET_SIZE / 1000.0
+        boxes = parse_boxes(generated.get(img, ""))
+        for (y1, x1, y2, x2) in boxes:
+            draw.rectangle([x1 * s, y1 * s, x2 * s, y2 * s], outline=BOX_COLOR, width=4)
+        boxed.save(os.path.join(case_dir, "bbox.png"))
+
+        # Texto com metadados e explicação completa.
+        r = by_image.get(img, {})
+        lines = [
+            f"Método: {method}",
+            f"Rótulo (verdadeiro): {true_lab}",
+            f"Predito: {pred_lab}",
+            f"Pergunta: {r.get('question', '')}",
+            "",
+            "Explicação gerada:",
+            generated.get(img, ""),
+            "",
+            f"Caixas [y1,x1,y2,x2] (escala 0-1000): {boxes if boxes else '(nenhuma)'}",
+        ]
+        with open(os.path.join(case_dir, "texto.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    print(f"Assets dos casos de falha exportados em {FAILURE_ASSETS_DIR}/ "
+          f"({len(FAILURE_CASES)} casos: clean.png, bbox.png, texto.txt).")
+
+
+# --------------------------------------------------------------------------- #
 def main():
     rows = load_unique_predictions(PRED_PATH)
     tf, tr, cf, cr, n_fake, n_real = verdict_counters(rows)
     make_wordclouds(tf, tr)
     make_lexicon_divergent(cf, cr, n_fake, n_real)
     make_failure_panel(rows)
+    export_failure_assets(rows)
     print(f"Figuras geradas para {len(rows)} imagens (n_fake={n_fake}, n_real={n_real}).")
 
 

@@ -226,6 +226,24 @@ def compute_detection_f1(
 _BBOX_TEXT_RE = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]")
 _BBOX_LOC_RE = re.compile(r"<loc(\d{4})><loc(\d{4})><loc(\d{4})><loc(\d{4})>")
 
+# Reúne ambos os formatos de caixa (textual ``[y1,x1,y2,x2]`` e tokens
+# ``<locNNNN>``) para remoção antes das métricas textuais.
+_BBOX_ANY_RE = re.compile(
+    r"\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]"
+    r"|(?:<loc\d{4}>){4}"
+)
+
+
+def strip_loc_tokens(text: str) -> str:
+    """Remove tokens de localização (caixas) do texto e normaliza espaços.
+
+    Serve para isolar a capacidade textual dos modelos de localização,
+    evitando que coordenadas numéricas contaminem métricas de sobreposição
+    (BLEU, ROUGE, CIDEr, etc.). Remove tanto ``[y1,x1,y2,x2]`` quanto
+    sequências ``<locNNNN><locNNNN><locNNNN><locNNNN>``.
+    """
+    return re.sub(r"\s+", " ", _BBOX_ANY_RE.sub(" ", text or "")).strip()
+
 
 def parse_bbox_text(text: str) -> list[tuple[int, int, int, int]]:
     """Extract bounding boxes from textual ``[y1,x1,y2,x2]`` sequences.
